@@ -1,11 +1,16 @@
+# 注释: 本文件定义了统一的图像恢复模型，支持多任务处理（如超分、去噪、投影及2D到3D转换）
 # unify all IR models
 
 from model.swinir import *
 
 
+# 对于构建模型的辅助函数 make_model 加入逐句说明
 def make_model(args):
+    # 设置残差块数量，决定Transformer层中重复使用的残差结构数量
     args.n_resblocks = 64
+    # 设置特征通道数，决定各层卷积输出的维度
     args.n_feats = 256
+    # 创建并返回一个 UniModel 实例，该实例基于传入的参数配置
     return UniModel(args=args)
 
 
@@ -17,6 +22,7 @@ class UniModel(nn.Module):
                  norm_layer=nn.LayerNorm, patch_norm=True,
                  use_checkpoint=False, num_feat=32, srscale=2):
         super(UniModel, self).__init__()
+        # 图像取值范围因子，默认为1，影响输入图像归一化时的幅值调整
         self.img_range = 1
         self.mean = torch.zeros(1, 1, 1, 1)
         self.window_size = window_size
