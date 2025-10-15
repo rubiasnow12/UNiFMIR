@@ -165,3 +165,26 @@ gradio_cached_examples/
 exampledata*
 *.tgz
 *.pth
+
+
+
+# === UNiFMIR 项目数据集与大文件 ===
+VCD/vcdnet/
+CSB/DataSet/Denoising_Planaria/
+CSB/DataSet/Denoising_Tribolium/
+CSB/DataSet/Isotropic/Isotropic_Liver/
+CSB/DataSet/Projection_Flywing/
+CSB/DataSet/BioSR_WF_to_SIM/DL-SR-main/dataset/
+CSB/DataSet/Synthetic_tubulin_gfp/
+CSB/DataSet/Synthetic_tubulin_granules/
+DeepBacs/
+Shareloc/
+
+# 自动忽略所有压缩包及其解压后的数据
+*.tar
+*.tar.gz
+*_train/
+*_test/
+*_val/
+*_data/
+
