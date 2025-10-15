@@ -10,8 +10,8 @@ sys.path.append('..')
 from csbdeep.utils import normalize, axes_dict, axes_check_and_normalize, backend_channels_last, move_channel_for_backend
 from csbdeep.io import load_training_data
 
-CSB_path = '/home/user2/dataset/microscope/CSB'
-VCD_path = '/home/user2/dataset/microscope/VCD'
+CSB_path = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/CSB'
+VCD_path = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/VCD'
 
 datamin, datamax = 0, 100  #
 
