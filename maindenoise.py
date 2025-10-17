@@ -158,7 +158,7 @@ def main():
 if __name__ == '__main__':
     test_only = True  # False  #
     normrange = 'Norm_0-100'  #
-    testsetlst =  ['Denoising_Tribolium'] # ['Denoising_Planaria']  #
+    testsetlst = ['Denoising_Planaria'] #  ['Denoising_Tribolium']   
     
     if testsetlst[0] == 'Denoising_Planaria':
         modelname = 'SwinIR'
