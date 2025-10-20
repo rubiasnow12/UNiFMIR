@@ -949,11 +949,11 @@ class PreTrainer():
 
 
 if __name__ == '__main__':
-    srdatapath = '/home/user2/dataset/microscope/CSB/DataSet/BioSR_WF_to_SIM/DL-SR-main/dataset/'
-    denoisedatapath = '/home/user2/dataset/microscope/CSB/DataSet/'
-    isodatapath = '/home/user2/dataset/microscope/CSB/DataSet/Isotropic/'
-    prodatapath = '/home/user2/dataset/microscope/CSB/DataSet/'
-    voldatapath = '/home/user2/dataset/microscope/VCD/vcdnet/'
+    srdatapath = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/CSB/DataSet/BioSR_WF_to_SIM/DL-SR-main/dataset/'
+    denoisedatapath = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/CSB/DataSet/'
+    isodatapath = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/CSB/DataSet/Isotropic/'
+    prodatapath = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/CSB/DataSet/'
+    voldatapath = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/VCD/vcdnet/'
     
     pretrain = '.'
     testonly = False  # True  #
