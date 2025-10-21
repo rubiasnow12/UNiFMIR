@@ -2,8 +2,9 @@ import os, time
 import torch
 import torch.nn as nn
 from model.enlcn import ProjectionUpdater
-import model.swinir as module
-
+# import model.swinir as module
+# 在 model/__init__.py 顶部添加
+import model.dinoir_v3 as module
 
 class Model(nn.Module):
     def __init__(self, args, ckp):
@@ -27,6 +28,9 @@ class Model(nn.Module):
         elif 'SwinIR2t3' in args.model:
             print('********** %s ***********' % args.model.lower())
             self.model = module.make_model2t3(args).to(self.device)
+        elif 'DINOIRv3' in args.model:  # 添加这个分支
+            print('********** %s ***********' % args.model.lower())
+            self.model = dinoir_v3.make_model(args).to(self.device)
         else:
             print('********** %s ***********' % args.model.lower())
             self.model = module.make_model(args).to(self.device)
