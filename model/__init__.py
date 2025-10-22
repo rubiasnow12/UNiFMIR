@@ -2,9 +2,9 @@ import os, time
 import torch
 import torch.nn as nn
 from model.enlcn import ProjectionUpdater
-# import model.swinir as module
+import model.swinir as module
 # 在 model/__init__.py 顶部添加
-import model.dinoir_v3 as module
+# import model.dinoir_v3 as module
 
 class Model(nn.Module):
     def __init__(self, args, ckp):
