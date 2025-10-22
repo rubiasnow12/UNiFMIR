@@ -159,7 +159,7 @@ if __name__ == '__main__':
     modelname = 'SwinIR'
     testsetlst = ['F-actin','CCPs','ER','Microtubules']  #
     test_only = True
-    modelpaths = [  './experiment/%smodel_best181.pt',
+    modelpaths = [  './dinoir_v3_vitb_preloaded_scale2.pth',
                     './experiment/%smodel_best.pt',
                     './experiment/%smodel_best147.pt',
                     './experiment/%smodel_best.pt']
@@ -169,7 +169,7 @@ if __name__ == '__main__':
     epoch = 1000
     rgb_range = 1
     lr = 0.00005
-    batch_size = 16
+    batch_size = 4
     patch_size = 128  # LR
     resume = 0
     iscpu = False
@@ -178,9 +178,15 @@ if __name__ == '__main__':
 
     for testset, modelpath in zip(testsetlst,modelpaths):
         savepath = '%s%s/' % (modelname, testset)
-        modelpath = modelpath % savepath
+        # modelpath = modelpath % savepath
+
+# 显式地使用我们想要的权重文件路径
+        current_modelpath = modelpaths[0]
 
         args = options()
+        # 把正确的 modelpath 传递给 args
+        args.modelpath = current_modelpath
+        
         torch.manual_seed(args.seed)
         checkpoint = utility.checkpoint(args)
         assert checkpoint.ok
