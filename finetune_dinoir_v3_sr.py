@@ -158,41 +158,41 @@ if __name__ == '__main__':
     datamin, datamax = 0, 100
     modelname = 'DINOIRv3'
     testsetlst = ['F-actin']  #
-    test_only = True
-    # modelpaths = [  './dinoir_v3_vitb_preloaded_scale2.pth',
+    test_only = False
+    # modelpaths = [  './experiment/%smodel_best181.pt',
     #                 './experiment/%smodel_best.pt',
     #                 './experiment/%smodel_best147.pt',
     #                 './experiment/%smodel_best.pt']
+    initial_weights_path = './dinoir_v3_vitb_preloaded_scale2.pth'
     normrange = 'Norm_0-100'  #
     
     scale = 2
-    epoch = 1000
+    epoch = 200
     rgb_range = 1
-    lr = 0.00005
-    batch_size = 4
-    patch_size = 128  # LR
+    lr = 5e-5
+    batch_size = 2
+    patch_size =64  # LR
     resume = 0
     iscpu = False
-    print_every = 1000
+    print_every = 100
     test_every = 2000
 
-# 指定 DINOv3 预加载或微调后的权重文件路径
-    dino_checkpoint_path = 'experiment/DINOIRv3F-actin/model/model_best.pt'
-
     for testset in testsetlst:
-        savepath = '%s%s/' % (modelname, testset)
-        # modelpath = modelpath % savepath
+        savepath = '%s%s/' % (modelname, testset) # Output directory
 
         args = options()
-        # 把正确的 modelpath 传递给 args
-        args.modelpath = dino_checkpoint_path
-        # 确保 resume 参数也被正确设置 (虽然 options() 内部设置了，这里可以再次确认)
+        
+        # --- Override necessary args after parsing ---
+        args.modelpath = initial_weights_path
         args.resume = resume
-
-        # (可选) 如果你有针对特定数据集微调后的权重，可以在这里根据 testset 修改 args.modelpath
-        # 例如:
-        # if testset == 'F-actin':
-        #     args.modelpath = './experiment/DINOIRv3F-actin/model_best_finetuned.pt' # 假设这是你微调后的权重
+        args.test_only = test_only # Ensure test_only is False
+        args.epochs = epoch        # Ensure correct epochs
+        args.lr = lr               # Ensure correct learning rate
+        args.batch_size = batch_size # Ensure correct batch size
+        args.patch_size = patch_size # Ensure correct patch size
+        args.save = savepath       # Ensure correct save path is passed
+        args.data_test = testset   # Ensure correct dataset is used for loading data
+        # --- End overrides ---
         
         torch.manual_seed(args.seed)
         checkpoint = utility.checkpoint(args)
