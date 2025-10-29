@@ -150,7 +150,9 @@ def main():
     else:
         while t.terminate():
             t.train()
-    
+            
+    # vvv 在 checkpoint.done() 之前添加 t.done() vvv
+    t.done()
     checkpoint.done()
 
 

@@ -106,6 +106,11 @@ def options():
     parser.add_argument('--loss', type=str, default='1*L1+1*L2', help='loss function configuration')
     parser.add_argument('--skip_threshold', type=float, default='1e8',
                         help='skipping batch that has large error')
+
+    # vvv 在这里添加早停相关参数 vvv
+    parser.add_argument('--patience', type=int, default=9999,
+                        help='early stopping patience (number of validations to wait)')
+    
     
     args = parser.parse_args()
     
@@ -150,7 +155,8 @@ def main():
     else:
         while t.terminate():
             t.train()
-    
+            
+    t.done()
     checkpoint.done()
 
 
@@ -169,12 +175,12 @@ if __name__ == '__main__':
     scale = 2
     epoch = 200
     rgb_range = 1
-    lr = 5e-5
+    lr = 5e-6
     batch_size = 2
     patch_size =64  # LR
     resume = 0
     iscpu = False
-    print_every = 100
+    print_every = 200
     test_every = 2000
 
     for testset in testsetlst:
@@ -191,8 +197,9 @@ if __name__ == '__main__':
         args.batch_size = batch_size # Ensure correct batch size
         args.patch_size = patch_size # Ensure correct patch size
         args.save = savepath       # Ensure correct save path is passed
+
         args.data_test = testset   # Ensure correct dataset is used for loading data
-        # --- End overrides ---
+        
         
         torch.manual_seed(args.seed)
         checkpoint = utility.checkpoint(args)

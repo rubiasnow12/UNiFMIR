@@ -527,12 +527,12 @@ class swinir(nn.Module):
         # for classical SR
         x = self.conv_first(x)
         torch.cuda.synchronize()
-        print('conv_first', time.time() - st)
+        # print('conv_first', time.time() - st)
 
         x = self.conv_after_body(self.forward_features(x)) + x
 
         torch.cuda.synchronize()
-        print('forward_features', time.time() - st)
+        # print('forward_features', time.time() - st)
         x = self.conv_before_upsample(x)
         
         if self.upscale == 11:
@@ -545,7 +545,7 @@ class swinir(nn.Module):
         x = self.conv_last(x)
 
         torch.cuda.synchronize()
-        print('conv_last', time.time() - st)
+        # print('conv_last', time.time() - st)
         x = x / self.img_range + self.mean
         
         return x[:, :, :H * self.upscale, :W * self.upscale]
@@ -722,16 +722,16 @@ class swinir2dto3d(nn.Module):
         x = self.conv_first(xunet)
 
         torch.cuda.synchronize()
-        print('conv_first', time.time() - st)
+        # print('conv_first', time.time() - st)
         x = self.conv_after_body(self.forward_features(x))  # + x
 
         torch.cuda.synchronize()
-        print('forward_features', time.time() - st)
+        # print('forward_features', time.time() - st)
         x = self.conv_before_upsample(x)
         x = self.conv_last(x)
 
         torch.cuda.synchronize()
-        print('conv_last', time.time() - st)
+        # print('conv_last', time.time() - st)
         x = x / self.img_range + self.mean
         
         return xunet, x

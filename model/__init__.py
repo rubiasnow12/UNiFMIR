@@ -51,7 +51,7 @@ class Model(nn.Module):
         self.proj_updater.redraw_projections()
         self.idx_scale = idx_scale
         
-        print('image size', x.shape)
+        # print('image size', x.shape)
         if self.chop and not self.training and self.args.test_only:
             if 'proj' in self.args.model:
                 result = self.forward_chopProj(x)
@@ -62,7 +62,7 @@ class Model(nn.Module):
         else:
             result = self.model(x)
         
-        print('forward time = ', time.time() - st)
+        # print('forward time = ', time.time() - st)
         return result
 
     def get_model(self):

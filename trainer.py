@@ -7,7 +7,8 @@ from utility import savecolorim
 from div2k import normalize, PercentileNormalizer, np, torch
 from tifffile import imsave
 from tqdm import tqdm
-
+import wandb
+from torch.utils.tensorboard import SummaryWriter
 
 class Trainer():
     def __init__(self, args, loader_train, loader_test, datasetname, my_model, my_loss, ckp):
@@ -26,6 +27,8 @@ class Trainer():
         self.normalizer = PercentileNormalizer(2, 99.8)  # 逼近npz
         self.normalizerhr = PercentileNormalizer(2, 99.8)
         self.sepoch = args.resume
+        # 早停相关参数
+        self.early_stop_counter = 0
 
         if self.args.load != '':
             self.optimizer.load(ckp.dir, epoch=len(ckp.log))
@@ -34,6 +37,18 @@ class Trainer():
         rp = os.path.dirname(__file__)
         self.dir = os.path.join(rp, 'experiment', self.args.save)
         os.makedirs(self.dir, exist_ok=True)
+
+        # 初始化 TensorBoard
+        self.writer = SummaryWriter(log_dir=self.dir)
+
+        # 初始化 Weights & Biases
+        wandb.init(
+            project="UniFMIR-Finetune",  # 你可以改成你喜欢的项目名
+            name=args.save,               # 使用 savepath 作为运行名称
+            config=vars(args)             # 记录所有超参数
+        )
+        # (可选) 告诉 wandb 监控你的模型
+        wandb.watch(my_model, log='all', log_freq=args.print_every)
         
     def train(self):
         self.loss.step()
@@ -42,10 +57,10 @@ class Trainer():
             self.sepoch = 0
         else:
             epoch = self.optimizer.get_last_epoch() + 1
-        lr = self.optimizer.get_lr()
+        current_lr = self.optimizer.get_lr()
 
         self.ckp.write_log(
-            '[Epoch {}]\tLearning rate: {:.2e}'.format(epoch, Decimal(lr)))
+            '[Epoch {}]\tLearning rate: {:.2e}'.format(epoch, Decimal(current_lr)))
         self.loss.start_log()
         timer_data, timer_model = utility.timer(), utility.timer()
         
@@ -111,10 +126,35 @@ class Trainer():
                 print('[{}/{}]\t{}/[comparative_loss:{}]\t{:.1f}+{:.1f}s'.format((batch + 1) * self.args.batch_size,
                     len(self.loader_train.dataset), self.loss.display_loss(batch),
                     comparative_loss.item(), timer_model.release(), timer_data.release()))
+                
+                # --- Log to TensorBoard & W&B ---
+
+                # !! 注意：我们修正了 global_step 的计算公式
+                global_step = (epoch - 1) * len(self.loader_train) + batch
+    
+                # 准备日志字典
+                log_dict = {
+                    "Learning_Rate": current_lr,
+                    "epoch": epoch
+                }
+    
+                # 计算平均 loss 并记录
+                n_samples = batch + 1
+                for l, c in zip(self.loss.loss, self.loss.log[-1]):
+                    avg_loss = c / n_samples
+                    log_dict[f'Loss/train_{l["type"]}'] = avg_loss
+                    # 记录到 TensorBoard
+                    self.writer.add_scalar(f'Loss/train_{l["type"]}', avg_loss, global_step)
+    
+                # 记录到 TensorBoard (学习率)
+                self.writer.add_scalar('Learning_Rate', current_lr, global_step)
+    
+                # 记录到 W&B
+                wandb.log(log_dict, step=global_step)
             timer_data.tic()
             
             if batch % self.args.test_every == 0:
-                self.loss.end_log(len(self.loader_train))
+                # self.loss.end_log(len(self.loader_train))
                 self.error_last = self.loss.log[-1, -1]
                 self.optimizer.schedule()
                 if 'Denoising' in self.args.data_test:
@@ -135,7 +175,7 @@ class Trainer():
                 lr = self.optimizer.get_lr()
                 print('Evaluation -- Batch%d/Epoch%d' % (batch, epoch))
                 self.ckp.write_log('Batch%d/Epoch%d' % (batch, epoch) + '\tLearning rate: {:.2e}'.format(Decimal(lr)))
-                self.loss.start_log()
+                # self.loss.start_log()
                 
         self.loss.end_log(len(self.loader_train))
         self.error_last = self.loss.log[-1, -1]
@@ -210,10 +250,28 @@ class Trainer():
             file.write('Name \n' + str(nmlst) + '\n PSNR \n' + str(pslst) + '\n SSIM \n' + str(sslst))
             file.close()
         else:
+            # !! 使用与 train() 中相同的公式
+            global_step = (epoch - 1) * len(self.loader_train) + batch 
+
+            # 记录到 TensorBoard
+            self.writer.add_scalar('PSNR/validation', psnrmean, global_step)
+            self.writer.add_scalar('SSIM/validation', ssmean, global_step)
+
+            # 记录到 W&B
+            wandb.log({
+                "PSNR/validation": psnrmean,
+                "SSIM/validation": ssmean,
+                "epoch": epoch
+            }, step=global_step)
             if psnrmean > self.bestpsnr:
                 self.bestpsnr = psnrmean
                 self.bestep = epoch
-            self.model.save(self.dir + '/model/', epoch, is_best=(self.bestep == epoch))
+                self.model.save(self.dir + '/model/', epoch, is_best=True)
+                self.early_stop_counter = 0 # 重置计数器
+                self.ckp.write_log(f'[Epoch {epoch}] New best PSNR: {self.bestpsnr:.4f}. Resetting patience counter.')
+            else:
+                self.early_stop_counter += 1 # 增加计数器
+                self.ckp.write_log(f'[Epoch {epoch}] PSNR did not improve from {self.bestpsnr:.4f}. Patience: {self.early_stop_counter}/{self.args.patience}')
             
         print('num', num, psnrmean, ssmean)
         print('psnrm, self.bestpsnr, self.bestep', psnrmean, self.bestpsnr, self.bestep)
@@ -820,4 +878,18 @@ class Trainer():
             return False
         else:
             epoch = self.optimizer.get_last_epoch() + 1
+            # 检查早停
+            if self.early_stop_counter >= self.args.patience:
+                self.ckp.write_log(f'--- Early stopping triggered after {self.args.patience} validation checks without improvement. ---')
+                self.ckp.write_log(f'Best model was from epoch {self.bestep} with PSNR {self.bestpsnr:.4f}.')
+                return False  # 停止训练
+            
             return epoch <= self.args.epochs
+
+    def done(self):
+        """关闭 TensorBoard and W&B"""
+        if hasattr(self, 'writer'):
+            self.writer.close()
+
+        if wandb.run is not None:
+            wandb.finish()

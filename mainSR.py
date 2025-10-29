@@ -106,6 +106,10 @@ def options():
     parser.add_argument('--loss', type=str, default='1*L1+1*L2', help='loss function configuration')
     parser.add_argument('--skip_threshold', type=float, default='1e8',
                         help='skipping batch that has large error')
+    parser.add_argument('--patience', type=int, default=9999,
+                        help='early stopping patience (number of validations to wait)')
+    
+    
     
     args = parser.parse_args()
     
@@ -157,12 +161,14 @@ def main():
 if __name__ == '__main__':
     datamin, datamax = 0, 100
     modelname = 'SwinIR'
-    testsetlst = ['F-actin','CCPs','ER','Microtubules']  #
-    test_only = True
-    modelpaths = [  './experiment/%smodel_best181.pt',
-                    './experiment/%smodel_best.pt',
-                    './experiment/%smodel_best147.pt',
-                    './experiment/%smodel_best.pt']
+    # testsetlst = ['F-actin','CCPs','ER','Microtubules']  #
+    testsetlst = ['F-actin']
+    test_only = False
+    # modelpaths = [  './experiment/%smodel_best181.pt',
+    #                 './experiment/%smodel_best.pt',
+    #                 './experiment/%smodel_best147.pt',
+    #                 './experiment/%smodel_best.pt']
+    modelpaths = [  './experiment/%smodel_best181.pt']
     normrange = 'Norm_0-100'  #
     
     scale = 2
