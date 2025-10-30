@@ -179,7 +179,7 @@ CSB/DataSet/Synthetic_tubulin_gfp/
 CSB/DataSet/Synthetic_tubulin_granules/
 DeepBacs/
 Shareloc/
-
+wandb/
 # 自动忽略所有压缩包及其解压后的数据
 *.tar
 *.tar.gz
