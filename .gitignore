@@ -170,13 +170,7 @@ exampledata*
 
 # === UNiFMIR 项目数据集与大文件 ===
 VCD/vcdnet/
-CSB/DataSet/Denoising_Planaria/
-CSB/DataSet/Denoising_Tribolium/
-CSB/DataSet/Isotropic/Isotropic_Liver/
-CSB/DataSet/Projection_Flywing/
-CSB/DataSet/BioSR_WF_to_SIM/DL-SR-main/dataset/
-CSB/DataSet/Synthetic_tubulin_gfp/
-CSB/DataSet/Synthetic_tubulin_granules/
+CSB/DataSet/
 DeepBacs/
 Shareloc/
 wandb/
