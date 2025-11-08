@@ -15,7 +15,7 @@ def options():
     parser.add_argument('--test_only', action='store_true', default=test_only, help='set this option to test the model')
     parser.add_argument('--resume', type=int, default=resume, help='-2:best;-1:latest.ptb; 0:pretrain; >0: resume')
     parser.add_argument('--modelpath', type=str, default='.', help='ENLCAx4.pt  pre-trained model directory')
-    parser.add_argument('--save', type=str, default=savepath, help='% (SwinIR, testset),')
+    parser.add_argument('--save', type=str, default=savepath, help='% (DINOIRv3, testset),')
     parser.add_argument('--inputchannel', type=int, default=1, help='')
 
     parser.add_argument('--task', type=int, default=-1)
@@ -72,6 +72,10 @@ def options():
     
     parser.add_argument('--seed', type=int, default=1,
                         help='random seed')
+    
+    parser.add_argument('--freeze_backbone', action='store_true', default=False,
+                        help='Freeze the DINOv3 backbone (blocks) and only train the head/tail.')
+    
     parser.add_argument('--local_rank', type=int, default=0)
     
     # Hardware specifications
@@ -85,7 +89,7 @@ def options():
                         help='k value for adversarial loss')
     
     # Optimization specifications
-    parser.add_argument('--decay', type=str, default='200', help='learning rate decay type')
+    parser.add_argument('--decay', type=str, default='50-100-150', help='learning rate decay type')
     parser.add_argument('--gamma', type=float, default=0.5,
                         help='learning rate decay factor for step decay')
     parser.add_argument('--optimizer', default='ADAM',
@@ -169,22 +173,24 @@ if __name__ == '__main__':
     #                 './experiment/%smodel_best.pt',
     #                 './experiment/%smodel_best147.pt',
     #                 './experiment/%smodel_best.pt']
-    initial_weights_path = './dinoir_v3_vitb_preloaded_scale2.pth'
+    # initial_weights_path = './dinoir_v3_vitb_preloaded_scale2.pth'
+    # initial_weights_path = './experiment/DINOIRv3F-actin/model/model_best.pt'
+    initial_weights_path = './dinoir_v3_vits_preloaded.pth'
     normrange = 'Norm_0-100'  #
     
     scale = 2
     epoch = 200
     rgb_range = 1
-    lr = 5e-6
-    batch_size = 2
-    patch_size =64  # LR
+    lr = 5e-5
+    batch_size = 4
+    patch_size =64 # LR
     resume = 0
     iscpu = False
     print_every = 200
     test_every = 2000
 
     for testset in testsetlst:
-        savepath = '%s%s/' % (modelname, testset) # Output directory
+        savepath = '%s%s-vitsfreeze/' % (modelname, testset) # Output directory
 
         args = options()
         

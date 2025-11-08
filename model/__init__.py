@@ -34,7 +34,22 @@ class Model(nn.Module):
         else:
             print('********** %s ***********' % args.model.lower())
             self.model = module.make_model(args).to(self.device)
-                
+
+
+        if getattr(args, 'freeze_backbone', False): # 检查 'freeze_backbone' 标志
+            print("--- WARNING: Freezing DINOv3 backbone weights (all 'blocks.*') ---")
+            print("--- Training ONLY head and tail layers. ---")
+            
+            # 遍历所有模型参数
+            for name, param in self.model.named_parameters():
+                if name.startswith('blocks.'):
+                    # 如果是 DINOv3 骨干 (Backbone)，则冻结
+                    param.requires_grad = False
+                else:
+                    # 如果是头/尾 (conv_first, upsample, etc.)，保持可训练
+                    param.requires_grad = True      
+
+        
         self.proj_updater = ProjectionUpdater(self.model, feature_redraw_interval=640)
         if args.precision == 'half':
             self.model.half()

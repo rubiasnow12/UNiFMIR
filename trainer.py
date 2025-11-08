@@ -42,13 +42,14 @@ class Trainer():
         self.writer = SummaryWriter(log_dir=self.dir)
 
         # 初始化 Weights & Biases
-        wandb.init(
-            project="UniFMIR-Finetune",  # 你可以改成你喜欢的项目名
-            name=args.save,               # 使用 savepath 作为运行名称
-            config=vars(args)             # 记录所有超参数
-        )
-        # (可选) 告诉 wandb 监控你的模型
-        wandb.watch(my_model, log='all', log_freq=args.print_every)
+        if not self.args.test_only:
+            wandb.init(
+                project="UniFMIR-Finetune",  # 你可以改成你喜欢的项目名
+                name=args.save,               # 使用 savepath 作为运行名称
+                config=vars(args)             # 记录所有超参数
+            )
+            # (可选) 告诉 wandb 监控你的模型
+            wandb.watch(my_model, log='all', log_freq=args.print_every)
         
     def train(self):
         self.loss.step()

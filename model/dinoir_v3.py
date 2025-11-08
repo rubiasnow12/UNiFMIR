@@ -337,14 +337,14 @@ def make_model2t3(args):
 
 class swinir(nn.Module):
     def __init__(self, img_size=64, patch_size=1, in_chans=1, out_chans=1,
-                 embed_dim=768, 
+                 embed_dim=384, 
                  # depths=[6, 6, 6], num_heads=[6, 6, 6],  # <-- 移除 SwinIR 参数
                  window_size=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, # qk_scale 也不再使用
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True, # ape 也不再使用
                  use_checkpoint=False, upscale=2, img_range=1., num_feat=32,
                  # === 添加 DINOv3 参数 ===
-                 dino_depth=12, dino_num_heads=12, dino_ffn_ratio=4.0,
+                 dino_depth=12, dino_num_heads=6, dino_ffn_ratio=4.0,
                  layerscale_init=1e-4, dino_norm_layer='layernorm', 
                  dino_ffn_layer='mlp', pos_embed_rope_base=100.0,
                  dino_rope_dtype='bf16'

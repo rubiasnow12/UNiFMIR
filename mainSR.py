@@ -163,7 +163,7 @@ if __name__ == '__main__':
     modelname = 'SwinIR'
     # testsetlst = ['F-actin','CCPs','ER','Microtubules']  #
     testsetlst = ['F-actin']
-    test_only = False
+    test_only = True
     # modelpaths = [  './experiment/%smodel_best181.pt',
     #                 './experiment/%smodel_best.pt',
     #                 './experiment/%smodel_best147.pt',
@@ -184,7 +184,7 @@ if __name__ == '__main__':
 
     for testset, modelpath in zip(testsetlst,modelpaths):
         savepath = '%s%s/' % (modelname, testset)
-        modelpath = modelpath % savepath
+        modelpath = modelpath % savepath  
 
         args = options()
         torch.manual_seed(args.seed)

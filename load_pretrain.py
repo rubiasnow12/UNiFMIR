@@ -13,23 +13,21 @@ except Exception as e:
     sys.exit(1)
 
 # 2. 定义 DINOv3 ViT-S 权重文件的路径
-dino_checkpoint_path = 'dinov3_vitb16_pretrain.pth'
-output_checkpoint_path = 'dinoir_v3_vitb_preloaded_scale2.pth'
+dino_checkpoint_path = 'dinov3_vits16_pretrain.pth'
+output_checkpoint_path = 'dinoir_v3_vits_preloaded.pth'
 
 if not os.path.exists(dino_checkpoint_path):
     print(f"错误: 未找到 DINOv3 权重文件 '{dino_checkpoint_path}'")
-    print("请从 https://dl.fbaipublicfiles.com/dinov3/dinov3_vitb16_pretrain.pth 下载")
-    print("并将其放置在 UNiFMIR 根目录下。")
     sys.exit(1)
 
 # 3. 创建一个模拟的 'args' 对象 (必须与 dinoir_v3.py 中的新默认值匹配)
 args = argparse.Namespace()
-args.scale = [2]
-args.inputchannel = 1 
+args.scale = [2]  
+args.inputchannel = 1    
 
-# 4. 实例化我们新的 (ViT-S 尺寸的) dinoir_v3 模型
-print("正在实例化 dinoir_v3 (ViT-B 尺寸) 模型...")
-# make_model 会自动使用 dinoir_v3.py 中新的默认值 (embed_dim=384, heads=6)
+# 4. 实例化我们新的 (ViT-B 尺寸的) dinoir_v3 模型
+print("正在实例化 dinoir_v3 (ViT-s尺寸) 模型...")
+# make_model 会自动使用 dinoir_v3.py 中新的默认值 (embed_dim=768, heads=12)
 model = make_model(args)
 model_state_dict = model.state_dict()
 print("...模型实例化成功。")
