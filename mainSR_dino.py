@@ -16,7 +16,7 @@ def options():
     parser.add_argument('--resume', type=int, default=resume, help='-2:best;-1:latest.ptb; 0:pretrain; >0: resume')
     parser.add_argument('--modelpath', type=str, default='.', help='ENLCAx4.pt  pre-trained model directory')
     parser.add_argument('--save', type=str, default=savepath, help='% (SwinIR, testset),')
-    parser.add_argument('--inputchannel', type=int, default=1, help='')
+    parser.add_argument('--inputchannel', type=int, default=3, help='')
 
     parser.add_argument('--task', type=int, default=-1)
     # Data specifications
@@ -179,10 +179,10 @@ if __name__ == '__main__':
     test_every = 2000
 
 # 指定 DINOv3 预加载或微调后的权重文件路径
-    dino_checkpoint_path = 'experiment/DINOIRv3F-actin-vitsfreeze/model/model_best.pt'
+    dino_checkpoint_path = 'experiment/DINOIRv3F-actin-vits/model/model_best.pt'
 
     for testset in testsetlst:
-        savepath = '%s%s/' % (modelname, testset)
+        savepath = '%s%s-vits/' % (modelname, testset)
         # modelpath = modelpath % savepath
 
         args = options()

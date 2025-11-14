@@ -336,15 +336,17 @@ def make_model2t3(args):
 
 
 class swinir(nn.Module):
-    def __init__(self, img_size=64, patch_size=1, in_chans=1, out_chans=1,
-                 embed_dim=384, 
+    def __init__(self, img_size=64, patch_size=1, in_chans=3, out_chans=1,
+                 embed_dim=768, 
+                 depths=[2, 2, 6, 2],
+                 num_heads=[6, 6, 6, 6],
                  # depths=[6, 6, 6], num_heads=[6, 6, 6],  # <-- 移除 SwinIR 参数
                  window_size=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, # qk_scale 也不再使用
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True, # ape 也不再使用
                  use_checkpoint=False, upscale=2, img_range=1., num_feat=32,
                  # === 添加 DINOv3 参数 ===
-                 dino_depth=12, dino_num_heads=6, dino_ffn_ratio=4.0,
+                 dino_depth=12, dino_num_heads=12, dino_ffn_ratio=4.0,
                  layerscale_init=1e-4, dino_norm_layer='layernorm', 
                  dino_ffn_layer='mlp', pos_embed_rope_base=100.0,
                  dino_rope_dtype='bf16'
@@ -362,6 +364,7 @@ class swinir(nn.Module):
         
         #####################################################################################################
         ################################### 1, shallow feature extraction ###################################
+        # ✅ conv_first 接收原始输入通道数（1 通道）
         self.conv_first = nn.Conv2d(num_in_ch, embed_dim, 3, 1, 1)
         
         #####################################################################################################
@@ -427,6 +430,14 @@ class swinir(nn.Module):
         # 5. DINOv3 的最终 Norm
         self.norm = norm_layer_cls(embed_dim)
 
+        # === 添加多尺度融合层 ===
+        # MedDINOv3 论文建议使用来自 4 个中间块 (2, 5, 8, 11) 的特征
+        # 再加上最后一个块 (第 12 个块) 的特征，总共 5 个特征图。
+        # 将它们连接 (concatenate) 起来，所以输入通道是 5 * embed_dim。
+        self.num_features_concat = 5 * embed_dim
+        self.feature_fusion = nn.Conv2d(self.num_features_concat, embed_dim, 1, 1, 0)
+        # === 融合层结束 ===
+
         # ===============================================================
         # END: DINOv3 Block Construction
         
@@ -475,81 +486,97 @@ class swinir(nn.Module):
         print('half')
         super().half()
     
+    # DINOv3 深层特征提取部分
     def forward_features(self, x):
         x_size = (x.shape[2], x.shape[3])
         
         # (B, C, H, W) -> (B, L, C)
         x = self.patch_embed(x)
-        
-        # (移除了 SwinIR 的 APE)
-        
         x = self.pos_drop(x)
 
-        # ===============================================================
-        # BEGIN: DINOv3 Forward Pass
-        # ===============================================================
-        
-        # (移除了 SwinIR 的 time 和 RSTB 循环)
-        
-        # 1. 计算 DINOv3 RoPE
-        # (确保 rope_embed 的 device 与 x 一致, 在 __init__ 中设置)
+        # 计算 DINOv3 RoPE
         self.rope_embed.device = x.device
         rope_sincos = self.rope_embed(H=x_size[0], W=x_size[1])
+        
+        intermediate_features = []
+        # MedDINOv3 论文使用 ViT-B (12层) 的第 2, 5, 8, 11 块 (0-indexed)
+        dino_blocks_to_save = [2, 5, 8, 11]
 
-        # 2. 运行 DINOv3 blocks
-        for blk in self.blocks:
+        # 运行 DINOv3 blocks
+        for i, blk in enumerate(self.blocks): 
             x = blk(x, rope_cos=rope_sincos[0], rope_sin=rope_sincos[1])
+            if i in dino_blocks_to_save:
+                # 按照论文图示，在输入到解码器之前应用 norm
+                intermediate_features.append(x)  # 保存未归一化的特征
 
-        # ===============================================================
-        # END: DINOv3 Forward Pass
-        # ===============================================================
-            
-        x = self.norm(x)  # B L C (使用 DINOv3 的 norm)
+        intermediate_features.append(x) # 添加最后一个块的未归一化输出
         
-        # (B, L, C) -> (B, C, H, W)
-        x = self.patch_unembed(x, x_size)
-        
-        return x
+        # Un-embed all features 所有特征并在空间域归一化（可选）
+        unembedded_features = []
+        for tokens in intermediate_features:
+            # 先 norm 再 unembed（符合 MedDINOv3 论文做法）
+            tokens_normed = self.norm(tokens)
+            unembedded_features.append(self.patch_unembed(tokens_normed, x_size))
+
+        return unembedded_features # 返回一个包含 5 个 (B, C, H, W) 特征图的列表
+
     
+
+    # 在 model/dinoir_v3.py 中
     def forward(self, x):
-        if self.precision == torch.half:
-            x = x.half()
+        # 伪三通道: 单通道 → 复制成三通道
+        if x.dim() == 4 and x.size(1) == 1:
+            x = x.repeat(1, 3, 1, 1)  # [B,1,H,W] → [B,3,H,W]
+        
 
         H, W = x.shape[2:]
-        x = self.check_image_size(x)
-        self.mean = self.mean.type_as(x)
-        x = (x - self.mean) * self.img_range
+        x_check = self.check_image_size(x)  # (B, 1, H_pad, W_pad)
+        self.mean = self.mean.type_as(x_check)
+        x_norm = (x_check - self.mean) * self.img_range # (B, 1, H_pad, W_pad)
 
-        import time
-        torch.cuda.synchronize()
-        st = time.time()
+        # === 1. 通道转换 (您的方案) ===
+        # DINOv3 encoder 需要 3 通道输入，将灰度复制3次
+        if x_norm.shape[1] == 1:
+            x_3c = x_norm.repeat(1, 3, 1, 1)  # (B, 3, H_pad, W_pad)
+        else:
+            x_3c = x_norm # 如果已经是 3 通道则直接使用
+        # === 修改结束 ===
         
-        # for classical SR
-        x = self.conv_first(x)
-        torch.cuda.synchronize()
-        # print('conv_first', time.time() - st)
-
-        x = self.conv_after_body(self.forward_features(x)) + x
-
-        torch.cuda.synchronize()
-        # print('forward_features', time.time() - st)
-        x = self.conv_before_upsample(x)
+        # === 2. 浅层特征提取 ===
+        # self.conv_first 现在是 Conv2d(3, embed_dim, ...)
+        x_first = self.conv_first(x_3c)  # (B, embed_dim, H_pad, W_pad)
+        
+        # === 3. 深层特征提取 (多尺度) ===
+        # forward_features 返回 5 个 (B, embed_dim, H_pad, W_pad) 特征图
+        intermediate_features = self.forward_features(x_first)
+        
+        # === 4. 特征融合 ===
+        x_concat = torch.cat(intermediate_features, dim=1)  # (B, 5*embed_dim, H_pad, W_pad)
+        x_fused = self.feature_fusion(x_concat)             # (B, embed_dim, H_pad, W_pad)
+        
+        # === 5. 主残差连接 ===
+        x_body = self.conv_after_body(x_fused) + x_first
+        
+        # === 6. 高质量重建 ===
+        x_out = self.conv_before_upsample(x_body)
         
         if self.upscale == 11:
             for layer in self.uplayers:
-                x = layer(x)
-                # print(x.shape)
-            x = F.interpolate(x, size=(H * self.upscale, W * self.upscale), mode='bilinear')
+                x_out = layer(x_out)
+            x_out = F.interpolate(x_out, size=(H * self.upscale, W * self.upscale), mode='bilinear')
         else:
-            x = self.upsample(x)
-        x = self.conv_last(x)
-
-        torch.cuda.synchronize()
-        # print('conv_last', time.time() - st)
-        x = x / self.img_range + self.mean
+            x_out = self.upsample(x_out)
         
-        return x[:, :, :H * self.upscale, :W * self.upscale]
+        # self.conv_last 输出对应通道数（1 通道）
+        x_out = self.conv_last(x_out)  # (B, out_chans, H_up, W_up)
+        
+        # === 6. 反归一化 ===
+        x_out = x_out / self.img_range + self.mean
+        
+        # === 7. 裁剪 ===
+        return x_out[:, :, :H * self.upscale, :W * self.upscale]
     
+
     # def load_state_dict(self, state_dict, strict=True):
     #     own_state = self.state_dict()
     #     for name, param in state_dict.items():
@@ -923,7 +950,7 @@ class SwinTransformerBlock(nn.Module):
             # if window size is larger than input resolution, we don't partition windows
             self.shift_size = 0
             self.window_size = min(self.input_resolution)
-        assert 0 <= self.shift_size < self.window_size, "shift_size must in 0-window_size"
+        assert 0 <= self.shift_size < self.window_size, "shift_size must in 0-window-size"
 
         self.norm1 = norm_layer(dim)
         self.attn = WindowAttention(

@@ -12,18 +12,18 @@ except Exception as e:
     print(f"导入失败: {e}")
     sys.exit(1)
 
-# 2. 定义 DINOv3 ViT-S 权重文件的路径
-dino_checkpoint_path = 'dinov3_vits16_pretrain.pth'
-output_checkpoint_path = 'dinoir_v3_vits_preloaded.pth'
+# 2. 定义 DINOv3 ViT-B 权重文件的路径
+dino_checkpoint_path = 'dinov3_vitb16_pretrain.pth' 
+output_checkpoint_path = 'dinoir_v3_vitb_preloaded.pth'  # ← 输出文件名
 
 if not os.path.exists(dino_checkpoint_path):
     print(f"错误: 未找到 DINOv3 权重文件 '{dino_checkpoint_path}'")
     sys.exit(1)
 
-# 3. 创建一个模拟的 'args' 对象 (必须与 dinoir_v3.py 中的新默认值匹配)
+# 3. 创建模拟的 'args' 对象
 args = argparse.Namespace()
 args.scale = [2]  
-args.inputchannel = 1    
+args.inputchannel = 3  # ← 改为 3(伪三通道)
 
 # 4. 实例化我们新的 (ViT-B 尺寸的) dinoir_v3 模型
 print("正在实例化 dinoir_v3 (ViT-s尺寸) 模型...")

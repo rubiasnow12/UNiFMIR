@@ -16,7 +16,7 @@ def options():
     parser.add_argument('--resume', type=int, default=resume, help='-2:best;-1:latest.ptb; 0:pretrain; >0: resume')
     parser.add_argument('--modelpath', type=str, default='.', help='ENLCAx4.pt  pre-trained model directory')
     parser.add_argument('--save', type=str, default=savepath, help='% (DINOIRv3, testset),')
-    parser.add_argument('--inputchannel', type=int, default=1, help='')
+    parser.add_argument('--inputchannel', type=int, default=3, help='')
 
     parser.add_argument('--task', type=int, default=-1)
     # Data specifications
@@ -89,7 +89,7 @@ def options():
                         help='k value for adversarial loss')
     
     # Optimization specifications
-    parser.add_argument('--decay', type=str, default='50-100-150', help='learning rate decay type')
+    parser.add_argument('--decay', type=str, default='200', help='learning rate decay type')
     parser.add_argument('--gamma', type=float, default=0.5,
                         help='learning rate decay factor for step decay')
     parser.add_argument('--optimizer', default='ADAM',
@@ -107,7 +107,7 @@ def options():
                         help='gradient clipping threshold (0 = no clipping)')
     
     # Loss specifications
-    parser.add_argument('--loss', type=str, default='1*L1+1*L2', help='loss function configuration')
+    parser.add_argument('--loss', type=str, default='1*L1+0.1*SSIM+0.01*VGG54', help='loss function configuration')
     parser.add_argument('--skip_threshold', type=float, default='1e8',
                         help='skipping batch that has large error')
 
@@ -175,24 +175,29 @@ if __name__ == '__main__':
     #                 './experiment/%smodel_best.pt']
     # initial_weights_path = './dinoir_v3_vitb_preloaded_scale2.pth'
     # initial_weights_path = './experiment/DINOIRv3F-actin/model/model_best.pt'
-    initial_weights_path = './dinoir_v3_vits_preloaded.pth'
+    initial_weights_path = './dinoir_v3_vitb_preloaded.pth'  # ← 改这里
     normrange = 'Norm_0-100'  #
     
     scale = 2
-    epoch = 200
-    rgb_range = 1
+    epoch = 1000
+    rgb_range = 1 
     lr = 5e-5
-    batch_size = 4
+    batch_size = 2
     patch_size =64 # LR
     resume = 0
     iscpu = False
-    print_every = 200
+    print_every = 1000
     test_every = 2000
 
     for testset in testsetlst:
-        savepath = '%s%s-vitsfreeze/' % (modelname, testset) # Output directory
-
+        savepath = '%s%s-vitb/' % (modelname, testset)  # ← 保存路径标记为 vitb
+        
         args = options()
+        
+        # 设置为伪三通道
+        args.inputchannel = 3  
+        args.inch = 3          
+        args.n_colors = 3      
         
         # --- Override necessary args after parsing ---
         args.modelpath = initial_weights_path

@@ -13,18 +13,18 @@ from csbdeep.io import load_training_data
 CSB_path = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/CSB'
 VCD_path = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/VCD'
 
-datamin, datamax = 0, 100  #
+datamin, datamax = 0, 100  
 
-
-def np2Tensor(*args):
+# Convert a list of numpy arrays to a list of torch tensors
+def np2Tensor(*args): 
     def _np2Tensor(img):
-        np_transpose = np.ascontiguousarray(img.transpose((2, 0, 1)))
+        np_transpose = np.ascontiguousarray(img.transpose((2, 0, 1)))  
         tensor = torch.from_numpy(np_transpose).float()
         return tensor
     
     return [_np2Tensor(a) for a in args]
 
-
+# Load training data from npz file
 def loadData(traindatapath, axes='SCYX', validation_split=0.05):
     print('Load data npz')
     if validation_split > 0:
@@ -34,6 +34,7 @@ def loadData(traindatapath, axes='SCYX', validation_split=0.05):
         X_val, Y_val = 0, 1
     print(X.shape, Y.shape)  # (18468, 128, 128, 1) (18468, 256, 256, 1)
     return X, Y, X_val, Y_val
+
 
 
 class DIV2K(data.Dataset):
@@ -107,7 +108,9 @@ class DIV2K(data.Dataset):
         
         hr = normalize(hr, datamin, datamax, clip=True) * self.args.rgb_range
         lr = normalize(lr, datamin, datamax, clip=True) * self.args.rgb_range
-        pair = (lr, hr)   # (128, 128, 1) (256, 256, 1)
+
+
+        pair = (lr, hr)   # (128, 128, 3) (256, 256, 3)
         pair_t = np2Tensor(*pair)
         
         return pair_t[0], pair_t[1], filename
@@ -133,7 +136,7 @@ class Flourescenedenoise(data.Dataset):
         if self.args.data_test:
             self.denoisegt = [self.args.data_test]
         else:
-            self.denoisegt = ['Denoising_Planaria', 'Denoising_Tribolium'               ]
+            self.denoisegt = ['Denoising_Planaria', 'Denoising_Tribolium']
         
         if istrain:
             self._scandenoisenpy()
@@ -175,6 +178,7 @@ class Flourescenedenoise(data.Dataset):
         self.hrpath = datapath + '%s/test_data/GT/' % self.denoisegt[0]
         lr.sort()
         self.nm_lrdenoise = lr
+    
     
     def __getitem__(self, idx):
         idx = idx % self.lenth

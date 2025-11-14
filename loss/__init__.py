@@ -36,6 +36,12 @@ class Loss(nn.modules.loss._Loss):
                     args,
                     loss_type
                 )
+            elif loss_type == 'SSIM':
+                module = import_module('loss.ssim')
+                loss_function = getattr(module, 'SSIMLoss')(
+                    rgb_range=args.rgb_range,
+                    channel=None  # 让 SSIM 动态按输入通道工作
+                )
 
             self.loss.append({
                 'type': loss_type,

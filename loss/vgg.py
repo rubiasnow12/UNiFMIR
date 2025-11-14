@@ -21,16 +21,19 @@ class VGG(nn.Module):
         for p in self.parameters():
             p.requires_grad = False
 
+    def _to_3ch(self, x):
+        # 单通道 -> 3 通道
+        if x.dim() == 4 and x.size(1) == 1:
+            x = x.repeat(1, 3, 1, 1)
+        return x
+
     def forward(self, sr, hr):
         def _forward(x):
+            x = self._to_3ch(x)
             x = self.sub_mean(x)
             x = self.vgg(x)
             return x
-            
+
         vgg_sr = _forward(sr)
-        with torch.no_grad():
-            vgg_hr = _forward(hr.detach())
-
-        loss = F.mse_loss(vgg_sr, vgg_hr)
-
-        return loss
+        vgg_hr = _forward(hr)
+        return F.mse_loss(vgg_sr, vgg_hr)

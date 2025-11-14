@@ -52,6 +52,10 @@ class Trainer():
             wandb.watch(my_model, log='all', log_freq=args.print_every)
         
     def train(self):
+        # 清理显存碎片
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         self.loss.step()
         if self.sepoch > 0:
             epoch = self.sepoch
@@ -157,7 +161,7 @@ class Trainer():
             if batch % self.args.test_every == 0:
                 # self.loss.end_log(len(self.loader_train))
                 self.error_last = self.loss.log[-1, -1]
-                self.optimizer.schedule()
+                
                 if 'Denoising' in self.args.data_test:
                     if 'mto1' in self.args.model:
                         self.test3DdenoiseInchannel5(batch, epoch)
@@ -180,7 +184,9 @@ class Trainer():
                 
         self.loss.end_log(len(self.loader_train))
         self.error_last = self.loss.log[-1, -1]
+
         self.optimizer.schedule()
+        
         print('save model Epoch%d' % epoch, loss)
         self.model.save(self.dir + '/model/', epoch, is_best=False)
 
@@ -534,7 +540,7 @@ class Trainer():
                     if hp + batchstep >= hr.shape[1]:
                         hp = hr.shape[1] - batchstep
         
-                    # [d, h=batchstep, w, 1]-> [h=batchstep, w, d, 1] # [768,768,360,2]
+                    # [d, h=batchstep, w, 1]-> [h=batch步, w, d, 1] # [768,768,360,2]
                     x_rot2 = _rotate(_rotate(lr[:, hp:hp + batchstep, :, :], axis=2, copy=False), axis=0, copy=False)
                     # [h=batchstep, w, d, 1]-> [h=batchstep, w, d]-> [h=batchstep, 1, w, d]
                     x_rot2 = np.expand_dims(np.squeeze(x_rot2), 1)
