@@ -26,7 +26,7 @@ args.scale = [2]
 args.inputchannel = 3  # ← 改为 3(伪三通道)
 
 # 4. 实例化我们新的 (ViT-B 尺寸的) dinoir_v3 模型
-print("正在实例化 dinoir_v3 (ViT-s尺寸) 模型...")
+print("正在实例化 dinoir_v3 (ViT-b尺寸) 模型...")
 # make_model 会自动使用 dinoir_v3.py 中新的默认值 (embed_dim=768, heads=12)
 model = make_model(args)
 model_state_dict = model.state_dict()

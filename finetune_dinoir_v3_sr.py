@@ -183,7 +183,7 @@ if __name__ == '__main__':
     rgb_range = 1 
     lr = 5e-5
     batch_size = 2
-    patch_size =64 # LR
+    patch_size =128 # LR
     resume = 0
     iscpu = False
     print_every = 1000

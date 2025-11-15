@@ -5,11 +5,12 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from model.enlcn import ENLCN
-from typing import Optional, Tuple
+# from typing import Optional, Tuple, Union, Callable
 # DINOv3 Dependencies
 import logging
+from torch import Tensor
 from functools import partial
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union, Callable
 # --- 来自 vision_transformer.py ---
 logger = logging.getLogger("dinov3")
 
@@ -187,16 +188,26 @@ class RopePositionEmbedding(nn.Module):
         return coords
 
     def forward(self, H: int, W: int):
-        if self._seq_len_cached == H * W:
+        # 根据实际序列长度判断是否需要重新计算
+        current_device = self.device if self.device is not None else torch.device('cpu')
+        seq_len = H * W
+        
+        # 缓存命中条件：长度相同 且 设备/dtype 匹配
+        if (self._seq_len_cached == seq_len and 
+            self._cos_cached is not None and
+            self._cos_cached.device == current_device and 
+            self._cos_cached.dtype == self.dtype):
             return self._cos_cached, self._sin_cached
-
-        self._seq_len_cached = H * W
+        
+        # 需要重新计算
+        self._seq_len_cached = seq_len
         coords = self._get_grid_coords(H, W)
         with torch.autocast(device_type="cuda", enabled=False):
             # t = coords.float() @ self.inv_freq.float().unsqueeze(-1)
             # freqs = torch.cat((t, t), dim=-1)
             t_coords = coords.float()
-            t_inv_freq = self.inv_freq.float()
+            # ensure inv_freq is on the current device to avoid device mismatch
+            t_inv_freq = self.inv_freq.to(current_device).float()
             freqs = torch.cat([
                 t_coords[:, 0:1] * t_inv_freq,
                 t_coords[:, 1:2] * t_inv_freq
@@ -321,7 +332,8 @@ def make_model(args):
         inch = int(args.inputchannel)
     except:
         inch = 1
-    return swinir(upscale=int(args.scale[0]), in_chans=inch)
+    # 为了匹配 DINOv3 预训练权重，必须使用 3 通道（RGB）
+    return dinov3(upscale=int(args.scale[0]), in_chans=3)
 
 
 def make_modelproj(args):
@@ -335,12 +347,12 @@ def make_model2t3(args):
     return swinir2dto3d(upscale=11, in_chans=121, out_chans=61)
 
 
-class swinir(nn.Module):
+class dinov3(nn.Module):
     def __init__(self, img_size=64, patch_size=1, in_chans=3, out_chans=1,
                  embed_dim=768, 
                  depths=[2, 2, 6, 2],
                  num_heads=[6, 6, 6, 6],
-                 # depths=[6, 6, 6], num_heads=[6, 6, 6],  # <-- 移除 SwinIR 参数
+                 vit_patch_size=8,
                  window_size=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, # qk_scale 也不再使用
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True, # ape 也不再使用
@@ -352,7 +364,7 @@ class swinir(nn.Module):
                  dino_rope_dtype='bf16'
                  # =======================
                  ):
-        super(swinir, self).__init__()
+        super(dinov3, self).__init__()
         num_in_ch = in_chans
         num_out_ch = out_chans
         
@@ -365,7 +377,7 @@ class swinir(nn.Module):
         #####################################################################################################
         ################################### 1, shallow feature extraction ###################################
         # ✅ conv_first 接收原始输入通道数（1 通道）
-        self.conv_first = nn.Conv2d(num_in_ch, embed_dim, 3, 1, 1)
+        # self.conv_first = nn.Conv2d(num_in_ch, embed_dim, 3, 1, 1)
         
         #####################################################################################################
         ################################### 2, deep feature extraction ######################################
@@ -378,15 +390,16 @@ class swinir(nn.Module):
         
         # split image into non-overlapping patches 把图像分割成不重叠的补丁
         self.patch_embed = PatchEmbed(
-            img_size=img_size, patch_size=patch_size, in_chans=embed_dim, embed_dim=embed_dim,
+            img_size=img_size, patch_size=vit_patch_size, in_chans=num_in_ch, embed_dim=embed_dim,
             norm_layer=norm_layer if self.patch_norm else None)
+        
         num_patches = self.patch_embed.num_patches
         patches_resolution = self.patch_embed.patches_resolution
         self.patches_resolution = patches_resolution
         
         # merge non-overlapping patches into image 合并不重叠的补丁到图像
         self.patch_unembed = PatchUnEmbed(
-            img_size=img_size, patch_size=patch_size, in_chans=embed_dim, embed_dim=embed_dim,
+            img_size=img_size, patch_size=vit_patch_size, in_chans=embed_dim, embed_dim=embed_dim,
             norm_layer=norm_layer if self.patch_norm else None)
         
         self.pos_drop = nn.Dropout(p=drop_rate)
@@ -444,6 +457,8 @@ class swinir(nn.Module):
         # build the last conv layer in deep feature extraction 构建深度特征提取中的最后一个卷积层
         self.conv_after_body = nn.Conv2d(embed_dim, embed_dim, 3, 1, 1)
         
+        # 这个 Upsample 会将特征图从 H/P, W/P 恢复到 H, W
+        self.decoder_feat_upsampler = Upsample(scale=vit_patch_size, num_feat=embed_dim)
         #####################################################################################################
         ################################ 3, high quality image reconstruction ################################
         # for classical SR
@@ -476,10 +491,17 @@ class swinir(nn.Module):
     
     def check_image_size(self, x):
         _, _, h, w = x.size()
-        mod_pad_h = (self.window_size - h % self.window_size) % self.window_size
-        mod_pad_w = (self.window_size - w % self.window_size) % self.window_size
+        # Use ViT patch size to pad input so PatchEmbed produces integer grid
+        try:
+            patch_H, patch_W = make_2tuple(self.patch_embed.patch_size)
+        except Exception:
+            # fallback to window_size if patch info not available
+            patch_H = patch_W = self.window_size
+        mod_pad_h = (patch_H - h % patch_H) % patch_H
+        mod_pad_w = (patch_W - w % patch_W) % patch_W
         x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h), 'reflect')
         return x
+
     
     def half(self):
         self.precision = torch.half
@@ -488,77 +510,88 @@ class swinir(nn.Module):
     
     # DINOv3 深层特征提取部分
     def forward_features(self, x):
-        x_size = (x.shape[2], x.shape[3])
+        # x 现在的形状是 (B, 3, H, W), e.g., (B, 3, 56, 56)
         
-        # (B, C, H, W) -> (B, L, C)
-        x = self.patch_embed(x)
-        x = self.pos_drop(x)
+        # <-- 修复 Bug -->
+        # 在 patch_embed 之前，根据输入的实际 H, W 计算 patch grid 大小
+        _, _, H, W = x.shape
+        patch_H, patch_W = self.patch_embed.patch_size
+        H_patch = H // patch_H
+        W_patch = W // patch_W
 
+        # (B, 3, H, W) -> (B, N, C) e.g., (B, 49, 768)
+        x = self.patch_embed(x) 
+        x = self.pos_drop(x)
+        
         # 计算 DINOv3 RoPE
         self.rope_embed.device = x.device
-        rope_sincos = self.rope_embed(H=x_size[0], W=x_size[1])
+        # 使用动态计算的 H_patch, W_patch
+        rope_sincos = self.rope_embed(H=H_patch, W=W_patch) 
         
         intermediate_features = []
-        # MedDINOv3 论文使用 ViT-B (12层) 的第 2, 5, 8, 11 块 (0-indexed)
         dino_blocks_to_save = [2, 5, 8, 11]
 
-        # 运行 DINOv3 blocks
+        # 运行 DINOv3 blocks (现在 N=64, 速度会快非常多)
         for i, blk in enumerate(self.blocks): 
             x = blk(x, rope_cos=rope_sincos[0], rope_sin=rope_sincos[1])
             if i in dino_blocks_to_save:
-                # 按照论文图示，在输入到解码器之前应用 norm
-                intermediate_features.append(x)  # 保存未归一化的特征
+                intermediate_features.append(x)  
 
-        intermediate_features.append(x) # 添加最后一个块的未归一化输出
+        intermediate_features.append(x) 
         
-        # Un-embed all features 所有特征并在空间域归一化（可选）
+        # Un-embed all features
         unembedded_features = []
         for tokens in intermediate_features:
-            # 先 norm 再 unembed（符合 MedDINOv3 论文做法）
             tokens_normed = self.norm(tokens)
-            unembedded_features.append(self.patch_unembed(tokens_normed, x_size))
+            # <-- 修复 Bug -->
+            # 告诉 patch_unembed 使用 patch grid 大小
+            unembedded_features.append(self.patch_unembed(tokens_normed, (H_patch, W_patch)))
 
-        return unembedded_features # 返回一个包含 5 个 (B, C, H, W) 特征图的列表
-
+        # 返回一个包含 5 个 (B, C, H/P, W/P) 特征图的列表
+        return unembedded_features
     
 
-    # 在 model/dinoir_v3.py 中
     def forward(self, x):
-        # 伪三通道: 单通道 → 复制成三通道
+        # ... (保留 1 通道检查 和 3 通道复制)
         if x.dim() == 4 and x.size(1) == 1:
-            x = x.repeat(1, 3, 1, 1)  # [B,1,H,W] → [B,3,H,W]
-        
+            x = x.repeat(1, 3, 1, 1)
 
         H, W = x.shape[2:]
-        x_check = self.check_image_size(x)  # (B, 1, H_pad, W_pad)
+        x_check = self.check_image_size(x)
         self.mean = self.mean.type_as(x_check)
-        x_norm = (x_check - self.mean) * self.img_range # (B, 1, H_pad, W_pad)
+        x_norm = (x_check - self.mean) * self.img_range 
 
-        # === 1. 通道转换 (您的方案) ===
-        # DINOv3 encoder 需要 3 通道输入，将灰度复制3次
         if x_norm.shape[1] == 1:
-            x_3c = x_norm.repeat(1, 3, 1, 1)  # (B, 3, H_pad, W_pad)
+            x_3c = x_norm.repeat(1, 3, 1, 1)
         else:
-            x_3c = x_norm # 如果已经是 3 通道则直接使用
-        # === 修改结束 ===
+            x_3c = x_norm 
         
-        # === 2. 浅层特征提取 ===
-        # self.conv_first 现在是 Conv2d(3, embed_dim, ...)
-        x_first = self.conv_first(x_3c)  # (B, embed_dim, H_pad, W_pad)
+        # === 2. 浅层特征提取 (已删除) ===
+        # x_first = self.conv_first(x_3c)  <-- 删除
         
         # === 3. 深层特征提取 (多尺度) ===
-        # forward_features 返回 5 个 (B, embed_dim, H_pad, W_pad) 特征图
-        intermediate_features = self.forward_features(x_first)
+        # 直接将 3 通道图像送入
+        intermediate_features = self.forward_features(x_3c)
         
         # === 4. 特征融合 ===
-        x_concat = torch.cat(intermediate_features, dim=1)  # (B, 5*embed_dim, H_pad, W_pad)
-        x_fused = self.feature_fusion(x_concat)             # (B, embed_dim, H_pad, W_pad)
+        # intermediate_features 是 (B, C, H/P, W/P)
+        x_concat = torch.cat(intermediate_features, dim=1)  # (B, 5*E, H/P, W/P)
+        x_fused = self.feature_fusion(x_concat)             # (B, E, H/P, W/P)
         
-        # === 5. 主残差连接 ===
-        x_body = self.conv_after_body(x_fused) + x_first
+        # === 5. 主残差连接 (已修改) ===
+        # x_body = self.conv_after_body(x_fused) + x_first <-- 删除 + x_first
+        x_body = self.conv_after_body(x_fused)              # (B, E, H/P, W/P)
+
+        # <-- 在这里添加新代码 -->
+        # 将特征图恢复到 H, W (e.g., 64, 64)
+        x_body_upsampled = self.decoder_feat_upsampler(x_body) 
+        # <-- 新代码结束 -->
         
         # === 6. 高质量重建 ===
-        x_out = self.conv_before_upsample(x_body)
+        # 使用 x_body_upsampled
+        x_out = self.conv_before_upsample(x_body_upsampled) 
+        
+        # ... (保留后续的 self.uplayers / self.upsample 和 conv_last 逻辑)
         
         if self.upscale == 11:
             for layer in self.uplayers:
@@ -567,13 +600,9 @@ class swinir(nn.Module):
         else:
             x_out = self.upsample(x_out)
         
-        # self.conv_last 输出对应通道数（1 通道）
-        x_out = self.conv_last(x_out)  # (B, out_chans, H_up, W_up)
-        
-        # === 6. 反归一化 ===
+        x_out = self.conv_last(x_out)
         x_out = x_out / self.img_range + self.mean
         
-        # === 7. 裁剪 ===
         return x_out[:, :, :H * self.upscale, :W * self.upscale]
     
 
@@ -597,7 +626,7 @@ class swinirProj_stage2(nn.Module):
         super(swinirProj_stage2, self).__init__()
         
         self.project = ENLCN(args=args)
-        self.denoise = swinir(img_size, patch_size, 1, out_chans,
+        self.denoise = dinov3(img_size, patch_size, 1, out_chans,
                               embed_dim, depths, num_heads, window_size, mlp_ratio, qkv_bias, qk_scale,
                               drop_rate, attn_drop_rate, drop_path_rate, norm_layer, ape, patch_norm, use_checkpoint,
                               upscale, img_range, num_feat)
@@ -626,8 +655,6 @@ class swinirProj_stage2(nn.Module):
 
 
 ################################## volumetric reconstruction ##############################
-
-
 class swinir2dto3d(nn.Module):
     def __init__(self, img_size=64, patch_size=1, in_chans=121, out_chans=61,
                  embed_dim=180 // 2, depths=[6, 6, 6], num_heads=[6, 6, 6],
@@ -763,10 +790,7 @@ class swinir2dto3d(nn.Module):
         
         return xunet, x
 
-
 ################################## SwinIR Blocks #############################
-
-
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
         super().__init__()
@@ -785,7 +809,6 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-
 def window_partition(x: torch.Tensor, window_size: int):
     """
     Args:
@@ -799,7 +822,6 @@ def window_partition(x: torch.Tensor, window_size: int):
     x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
     windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
     return windows
-
 
 def window_reverse(windows, window_size: int, H: int, W: int):
     """
@@ -816,7 +838,6 @@ def window_reverse(windows, window_size: int, H: int, W: int):
     x = windows.view(B, H // window_size, W // window_size, window_size, window_size, -1)
     x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, -1)
     return x
-
 
 class WindowAttention(nn.Module):
     r""" Window based multi-head self attention (W-MSA) module with relative position bias.
@@ -915,7 +936,6 @@ class WindowAttention(nn.Module):
         # x = self.proj(x)
         flops += N * self.dim * self.dim
         return flops
-
 
 class SwinTransformerBlock(nn.Module):
     r""" Swin Transformer Block.
@@ -1052,7 +1072,6 @@ class SwinTransformerBlock(nn.Module):
         flops += self.dim * H * W
         return flops
 
-
 class PatchMerging(nn.Module):
     r""" Patch Merging Layer.
 
@@ -1100,7 +1119,6 @@ class PatchMerging(nn.Module):
         flops = H * W * self.dim
         flops += (H // 2) * (W // 2) * 4 * self.dim * 2 * self.dim
         return flops
-
 
 class BasicLayer(nn.Module):
     """ A basic Swin Transformer layer for one stage.
@@ -1170,7 +1188,6 @@ class BasicLayer(nn.Module):
         if self.downsample is not None:
             flops += self.downsample.flops()
         return flops
-
 
 class RSTB(nn.Module):
     """Residual Swin Transformer Block (RSTB).
@@ -1258,48 +1275,85 @@ class RSTB(nn.Module):
 
         return flops
 
+# --- 这是 DINOv3 真正的 PatchEmbed 实现 ---
+def make_2tuple(x):
+    if isinstance(x, tuple):
+        assert len(x) == 2
+        return x
+
+    assert isinstance(x, int)
+    return (x, x)
+
 
 class PatchEmbed(nn.Module):
-    r""" Image to Patch Embedding
+    """
+    2D image to patch embedding: (B,C,H,W) -> (B,N,D)
 
     Args:
-        img_size (int): Image size.  Default: 224.
-        patch_size (int): Patch token size. Default: 4.
-        in_chans (int): Number of input image channels. Default: 3.
-        embed_dim (int): Number of linear projection output channels. Default: 96.
-        norm_layer (nn.Module, optional): Normalization layer. Default: None
+        img_size: Image size.
+        patch_size: Patch token size.
+        in_chans: Number of input image channels.
+        embed_dim: Number of linear projection output channels.
+        norm_layer: Normalization layer.
     """
 
-    def __init__(self, img_size=224, patch_size=4, in_chans=3, embed_dim=96, norm_layer=None):
+    def __init__(
+        self,
+        img_size: Union[int, Tuple[int, int]] = 224,
+        patch_size: Union[int, Tuple[int, int]] = 16,
+        in_chans: int = 3,
+        embed_dim: int = 768,
+        norm_layer: Optional[Callable] = None,
+        flatten_embedding: bool = True,
+    ) -> None:
         super().__init__()
-        img_size = to_2tuple(img_size)
-        patch_size = to_2tuple(patch_size)
-        patches_resolution = [img_size[0] // patch_size[0], img_size[1] // patch_size[1]]
-        self.img_size = img_size
-        self.patch_size = patch_size
-        self.patches_resolution = patches_resolution
-        self.num_patches = patches_resolution[0] * patches_resolution[1]
+
+        image_HW = make_2tuple(img_size)
+        patch_HW = make_2tuple(patch_size)
+        patch_grid_size = (
+            image_HW[0] // patch_HW[0],
+            image_HW[1] // patch_HW[1],
+        )
+
+        self.img_size = image_HW
+        self.patch_size = patch_HW
+        self.patches_resolution = patch_grid_size
+        self.num_patches = patch_grid_size[0] * patch_grid_size[1]
 
         self.in_chans = in_chans
         self.embed_dim = embed_dim
 
-        if norm_layer is not None:
-            self.norm = norm_layer(embed_dim)
-        else:
-            self.norm = None
+        self.flatten_embedding = flatten_embedding
 
-    def forward(self, x):
-        x = x.flatten(2).transpose(1, 2)  # B Ph*Pw C
-        if self.norm is not None:
-            x = self.norm(x)
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_HW, stride=patch_HW)
+        self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
+
+    def forward(self, x: Tensor) -> Tensor:
+        _, _, H, W = x.shape
+        # patch_H, patch_W = self.patch_size
+        # assert H % patch_H == 0, f"Input image height {H} is not a multiple of patch height {patch_H}"
+        # assert W % patch_W == 0, f"Input image width {W} is not a multiple of patch width: {patch_W}"
+
+        x = self.proj(x)  # B C H W
+        H, W = x.size(2), x.size(3)
+        x = x.flatten(2).transpose(1, 2)  # B HW C
+        x = self.norm(x)
+        if not self.flatten_embedding:
+            x = x.reshape(-1, H, W, self.embed_dim)  # B H W C
         return x
 
-    def flops(self):
-        flops = 0
-        H, W = self.img_size
+    def flops(self) -> float:
+        Ho, Wo = self.patches_resolution
+        flops = Ho * Wo * self.embed_dim * self.in_chans * (self.patch_size[0] * self.patch_size[1])
         if self.norm is not None:
-            flops += H * W * self.embed_dim
+            flops += Ho * Wo * self.embed_dim
         return flops
+
+    def reset_parameters(self):
+        k = 1 / (self.in_chans * (self.patch_size[0] ** 2))
+        nn.init.uniform_(self.proj.weight, -math.sqrt(k), math.sqrt(k))
+        if self.proj.bias is not None:
+            nn.init.uniform_(self.proj.bias, -math.sqrt(k), math.sqrt(k))
 
 
 class PatchUnEmbed(nn.Module):
@@ -1453,7 +1507,7 @@ class UNetA(nn.Module):
                 H0, W0 = encoder_layers[idx - 1].shape[2:]  # x.shape[2:]
             else:
                 H0, W0 = H * self.upscale, W * self.upscale
-            x = torch.concat([encoder_layers[idx], x], dim=1)
+            x = torch.cat([encoder_layers[idx], x], dim=1)
             x = layer(x)  # n [1,944,944,61]
             x = F.interpolate(x, size=(H0, W0), mode='bilinear')
             idx -= 1
