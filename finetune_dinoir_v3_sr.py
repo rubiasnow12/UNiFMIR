@@ -219,7 +219,7 @@ if __name__ == '__main__':
                     args.wandb_id = f.read().strip() or None
             else:
                 # 可选：把默认 id 写在这里（不推荐长期硬编码）
-                args.wandb_id = 'jhky6d4s'
+                # args.wandb_id = 'jhky6d4s'
                 pass
 
         args.data_test = testset   # Ensure correct dataset is used for loading data
