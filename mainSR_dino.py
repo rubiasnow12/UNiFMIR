@@ -179,10 +179,10 @@ if __name__ == '__main__':
     test_every = 2000
 
 # 指定 DINOv3 预加载或微调后的权重文件路径
-    dino_checkpoint_path = 'experiment/DINOIRv3F-actin-vits/model/model_best.pt'
+    dino_checkpoint_path = 'experiment/DINOIRv3F-actin-vitb/model/model_best.pt'
 
     for testset in testsetlst:
-        savepath = '%s%s-vits/' % (modelname, testset)
+        savepath = '%s%s-vitb/' % (modelname, testset)
         # modelpath = modelpath % savepath
 
         args = options()

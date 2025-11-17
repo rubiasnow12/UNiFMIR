@@ -7,6 +7,7 @@ import argparse
 from div2k import DIV2K
 from torch.utils.data import dataloader
 import model
+import os
 
 
 def options():
@@ -115,6 +116,7 @@ def options():
     parser.add_argument('--patience', type=int, default=9999,
                         help='early stopping patience (number of validations to wait)')
     
+    parser.add_argument('--wandb_id', type=str, default=None, help='wandb run id to resume')
     
     args = parser.parse_args()
     
@@ -175,14 +177,14 @@ if __name__ == '__main__':
     #                 './experiment/%smodel_best.pt']
     # initial_weights_path = './dinoir_v3_vitb_preloaded_scale2.pth'
     # initial_weights_path = './experiment/DINOIRv3F-actin/model/model_best.pt'
-    initial_weights_path = './dinoir_v3_vitb_preloaded.pth'  # ← 改这里
+    initial_weights_path = './dinoir_v3_vitb_preloaded.pth'  
     normrange = 'Norm_0-100'  #
     
     scale = 2
-    epoch = 1000
+    epoch = 200
     rgb_range = 1 
     lr = 5e-5
-    batch_size = 2
+    batch_size = 16
     patch_size =128 # LR
     resume = 0
     iscpu = False
@@ -190,7 +192,7 @@ if __name__ == '__main__':
     test_every = 2000
 
     for testset in testsetlst:
-        savepath = '%s%s-vitb/' % (modelname, testset)  # ← 保存路径标记为 vitb
+        savepath = '%s%s-vit_b/' % (modelname, testset)  #保存路径标记为 vitb
         
         args = options()
         
@@ -208,6 +210,17 @@ if __name__ == '__main__':
         args.batch_size = batch_size # Ensure correct batch size
         args.patch_size = patch_size # Ensure correct patch size
         args.save = savepath       # Ensure correct save path is passed
+
+        # 如果命令行没有提供 wandb_id，则尝试从之前保存的 wandb_id.txt 读取
+        if args.wandb_id is None:
+            wandb_id_file = os.path.join(args.save, 'wandb_id.txt')
+            if os.path.exists(wandb_id_file):
+                with open(wandb_id_file, 'r') as f:
+                    args.wandb_id = f.read().strip() or None
+            else:
+                # 可选：把默认 id 写在这里（不推荐长期硬编码）
+                args.wandb_id = 'jhky6d4s'
+                pass
 
         args.data_test = testset   # Ensure correct dataset is used for loading data
         
