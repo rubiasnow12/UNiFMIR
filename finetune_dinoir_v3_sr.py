@@ -90,7 +90,7 @@ def options():
                         help='k value for adversarial loss')
     
     # Optimization specifications
-    parser.add_argument('--decay', type=str, default='200', help='learning rate decay type')
+    parser.add_argument('--decay', type=str, default='cosine', help='learning rate decay type')
     parser.add_argument('--gamma', type=float, default=0.5,
                         help='learning rate decay factor for step decay')
     parser.add_argument('--optimizer', default='ADAM',
@@ -108,7 +108,7 @@ def options():
                         help='gradient clipping threshold (0 = no clipping)')
     
     # Loss specifications
-    parser.add_argument('--loss', type=str, default='1*L1+0.1*SSIM+0.01*VGG54', help='loss function configuration')
+    parser.add_argument('--loss', type=str, default='1*L1+1.0*SSIM', help='loss function configuration')
     parser.add_argument('--skip_threshold', type=float, default='1e8',
                         help='skipping batch that has large error')
 
@@ -169,7 +169,7 @@ def main():
 if __name__ == '__main__':
     datamin, datamax = 0, 100
     modelname = 'DINOIRv3'
-    testsetlst = ['F-actin']  #
+    testsetlst = ['CCPs','ER','Microtubules']
     test_only = False
     # modelpaths = [  './experiment/%smodel_best181.pt',
     #                 './experiment/%smodel_best.pt',
@@ -181,7 +181,7 @@ if __name__ == '__main__':
     normrange = 'Norm_0-100'  #
     
     scale = 2
-    epoch = 200
+    epoch = 100
     rgb_range = 1 
     lr = 5e-5
     batch_size = 16
@@ -192,7 +192,7 @@ if __name__ == '__main__':
     test_every = 2000
 
     for testset in testsetlst:
-        savepath = '%s%s-vit_b/' % (modelname, testset)  #保存路径标记为 vitb
+        savepath = '%s%s/' % (modelname, testset)  #保存路径标记为 vitb
         
         args = options()
         
@@ -212,18 +212,20 @@ if __name__ == '__main__':
         args.save = savepath       # Ensure correct save path is passed
 
         # 如果命令行没有提供 wandb_id，则尝试从之前保存的 wandb_id.txt 读取
-        if args.wandb_id is None:
-            wandb_id_file = os.path.join(args.save, 'wandb_id.txt')
-            if os.path.exists(wandb_id_file):
-                with open(wandb_id_file, 'r') as f:
-                    args.wandb_id = f.read().strip() or None
-            else:
-                # 可选：把默认 id 写在这里（不推荐长期硬编码）
-                # args.wandb_id = 'jhky6d4s'
-                pass
+        # if args.wandb_id is None:
+        #     wandb_id_file = os.path.join(args.save, 'wandb_id.txt')
+        #     if os.path.exists(wandb_id_file):
+        #         with open(wandb_id_file, 'r') as f:
+        #             args.wandb_id = f.read().strip() or None
+        #     else:
+        #         # 可选：把默认 id 写在这里（不推荐长期硬编码）
+        #         args.wandb_id = 'jhky6d4s'
+        #         pass
 
-        args.data_test = testset   # Ensure correct dataset is used for loading data
-        
+        # args.data_test = testset   # Ensure correct dataset is used for loading data
+        if args.resume != 0 and args.load == '':
+            args.load = args.save
+            print(f"Auto-setting args.load = '{args.save}' to load optimizer state.")
         
         torch.manual_seed(args.seed)
         checkpoint = utility.checkpoint(args)

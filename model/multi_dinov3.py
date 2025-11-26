@@ -376,7 +376,7 @@ class dinov3(nn.Module):
         
         #####################################################################################################
         ################################### 1, shallow feature extraction ###################################
-        # conv_first 接收原始输入通道数（1 通道）
+        # ✅ conv_first 接收原始输入通道数（1 通道）
         # self.conv_first = nn.Conv2d(num_in_ch, embed_dim, 3, 1, 1)
         
         #####################################################################################################
@@ -443,6 +443,14 @@ class dinov3(nn.Module):
         # 5. DINOv3 的最终 Norm
         self.norm = norm_layer_cls(embed_dim)
 
+        # === 添加多尺度融合层 ===
+        # MedDINOv3 论文建议使用来自 4 个中间块 (2, 5, 8, 11) 的特征
+        # 再加上最后一个块 (第 12 个块) 的特征，总共 5 个特征图。
+        # 将它们连接 (concatenate) 起来，所以输入通道是 5 * embed_dim。
+        self.num_features_concat = 5 * embed_dim
+        self.feature_fusion = nn.Conv2d(self.num_features_concat, embed_dim, 1, 1, 0)
+        # === 融合层结束 ===
+
         # ===============================================================
         # END: DINOv3 Block Construction
         
@@ -502,7 +510,9 @@ class dinov3(nn.Module):
     
     # DINOv3 深层特征提取部分
     def forward_features(self, x):
-       
+        # x 现在的形状是 (B, 3, H, W), e.g., (B, 3, 56, 56)
+        
+        # <-- 修复 Bug -->
         # 在 patch_embed 之前，根据输入的实际 H, W 计算 patch grid 大小
         _, _, H, W = x.shape
         patch_H, patch_W = self.patch_embed.patch_size
@@ -518,19 +528,27 @@ class dinov3(nn.Module):
         # 使用动态计算的 H_patch, W_patch
         rope_sincos = self.rope_embed(H=H_patch, W=W_patch) 
         
-        # 运行 DINOv3 blocks 
+        intermediate_features = []
+        dino_blocks_to_save = [2, 5, 8, 11]
+
+        # 运行 DINOv3 blocks (现在 N=64, 速度会快非常多)
         for i, blk in enumerate(self.blocks): 
             x = blk(x, rope_cos=rope_sincos[0], rope_sin=rope_sincos[1])
-        
-        # 对最后一层的输出进行归一化
-        x = self.norm(x)
-        
-        # Un-embed features
-        # 告诉 patch_unembed 使用 patch grid 大小
-        x_unembedded = self.patch_unembed(x, (H_patch, W_patch))
+            if i in dino_blocks_to_save:
+                intermediate_features.append(x)  
 
-        # 返回单个 (B, C, H/P, W/P) 特征图，不再是列表
-        return x_unembedded
+        intermediate_features.append(x) 
+        
+        # Un-embed all features
+        unembedded_features = []
+        for tokens in intermediate_features:
+            tokens_normed = self.norm(tokens)
+            # <-- 修复 Bug -->
+            # 告诉 patch_unembed 使用 patch grid 大小
+            unembedded_features.append(self.patch_unembed(tokens_normed, (H_patch, W_patch)))
+
+        # 返回一个包含 5 个 (B, C, H/P, W/P) 特征图的列表
+        return unembedded_features
     
 
     def forward(self, x):
@@ -548,24 +566,32 @@ class dinov3(nn.Module):
         else:
             x_3c = x_norm 
         
+        # === 2. 浅层特征提取 (已删除) ===
+        # x_first = self.conv_first(x_3c)  <-- 删除
         
-        # === 3. 深层特征提取  ===
+        # === 3. 深层特征提取 (多尺度) ===
         # 直接将 3 通道图像送入
-        x_features = self.forward_features(x_3c)
+        intermediate_features = self.forward_features(x_3c)
         
+        # === 4. 特征融合 ===
+        # intermediate_features 是 (B, C, H/P, W/P)
+        x_concat = torch.cat(intermediate_features, dim=1)  # (B, 5*E, H/P, W/P)
+        x_fused = self.feature_fusion(x_concat)             # (B, E, H/P, W/P)
         
         # === 5. 主残差连接 (已修改) ===
-        # 直接提取特征图
-        x_body = self.conv_after_body(x_features)      
+        # x_body = self.conv_after_body(x_fused) + x_first <-- 删除 + x_first
+        x_body = self.conv_after_body(x_fused)              # (B, E, H/P, W/P)
 
+        # <-- 在这里添加新代码 -->
         # 将特征图恢复到 H, W (e.g., 64, 64)
         x_body_upsampled = self.decoder_feat_upsampler(x_body) 
-
+        # <-- 新代码结束 -->
         
         # === 6. 高质量重建 ===
         # 使用 x_body_upsampled
         x_out = self.conv_before_upsample(x_body_upsampled) 
         
+        # ... (保留后续的 self.uplayers / self.upsample 和 conv_last 逻辑)
         
         if self.upscale == 11:
             for layer in self.uplayers:
@@ -580,7 +606,15 @@ class dinov3(nn.Module):
         return x_out[:, :, :H * self.upscale, :W * self.upscale]
     
 
-   
+    # def load_state_dict(self, state_dict, strict=True):
+    #     own_state = self.state_dict()
+    #     for name, param in state_dict.items():
+    #         if name in own_state:
+    #             if isinstance(param, nn.Parameter):
+    #                 param = param.data
+    #             own_state[name].copy_(param)
+
+
 ################################## Projection ##############################
 class swinirProj_stage2(nn.Module):
     def __init__(self, img_size=64, patch_size=1, out_chans=1,
@@ -1241,7 +1275,7 @@ class RSTB(nn.Module):
 
         return flops
 
-# --- 这是 DINOv3 的 PatchEmbed 实现 ---
+# --- 这是 DINOv3 真正的 PatchEmbed 实现 ---
 def make_2tuple(x):
     if isinstance(x, tuple):
         assert len(x) == 2

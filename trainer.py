@@ -22,16 +22,50 @@ class Trainer():
         self.loader_train = loader_train
         self.loader_test = loader_test
         self.model = my_model
-        self.loss = my_loss
+        self.loss = my_loss        # 早停相关参数
+        self.early_stop_counter = 0
         self.optimizer = utility.make_optimizer(args, self.model)
         self.normalizer = PercentileNormalizer(2, 99.8)  # 逼近npz
         self.normalizerhr = PercentileNormalizer(2, 99.8)
         self.sepoch = args.resume
-        # 早停相关参数
-        self.early_stop_counter = 0
 
-        if self.args.load != '':
-            self.optimizer.load(ckp.dir, epoch=len(ckp.log))
+
+        # if self.args.load != '':
+        #     self.optimizer.load(ckp.dir, epoch=len(ckp.log))
+# 1. 尝试加载旧的优化器状态 (如果存在)
+        #    我们只加载状态，不在这里快进 (epoch=1)
+        try:
+            if self.args.load != '':
+                # 这是原始逻辑，用于 resume=0, -1, -2
+                self.optimizer.load(ckp.dir, epoch=len(ckp.log))
+            elif self.sepoch > 0:
+                # 尝试为 resume > 0 加载
+                self.optimizer.load(ckp.dir, epoch=1) # 加载状态，但不快进
+        except FileNotFoundError:
+            print(f"--- [Trainer] 警告: 'optimizer.pt' 未找到。将使用新的优化器状态。 ---")
+        except Exception as e:
+            print(f"--- [Trainer] 警告: 无法加载优化器状态。 {e} ---")
+
+        # 2. 关键修复：手动快进调度器 (scheduler)
+        #    这可以确保即使 optimizer.pt 丢失，epoch 计数器也是正确的
+        if self.sepoch > 0:
+            print(f"--- [Trainer] 正在快进学习率调度器到 epoch {self.sepoch} ---")
+            
+            # 获取当前的 last_epoch (如果 optimizer.pt 没加载，这将是 0)
+            current_scheduler_epoch = self.optimizer.get_last_epoch()
+            
+            # 计算需要前进的步数
+            steps_to_advance = self.sepoch - (current_scheduler_epoch + 1)
+            
+            if steps_to_advance > 0:
+                print(f"--- [Trainer] 调度器在 epoch {current_scheduler_epoch}。正在前进 {steps_to_advance} 步... ---")
+                for _ in range(steps_to_advance):
+                    # utility.py 中的 schedule() 方法会调用 self.scheduler.step()
+                    self.optimizer.schedule() 
+            
+            print(f"--- [Trainer] 调度器已更新到 epoch {self.optimizer.get_last_epoch()} ---")
+            # 此时 get_last_epoch() 应该返回 48
+
 
         self.error_last = 1e8
         rp = os.path.dirname(__file__)
@@ -41,16 +75,50 @@ class Trainer():
         # 初始化 TensorBoard
         self.writer = SummaryWriter(log_dir=self.dir)
 
+        # # 初始化 Weights & Biases
+        # if not self.args.test_only:
+        #     wandb.init(
+        #         project="UniFMIR-Finetune",  # 你可以改成你喜欢的项目名
+        #         name=args.save,               # 使用 savepath 作为运行名称
+        #         config=vars(args)             # 记录所有超参数
+        #     )
+        #     # (可选) 告诉 wandb 监控你的模型
+        #     wandb.watch(my_model, log='all', log_freq=args.print_every)
         # 初始化 Weights & Biases
         if not self.args.test_only:
-            wandb.init(
-                project="UniFMIR-Finetune",  # 你可以改成你喜欢的项目名
-                name=args.save,               # 使用 savepath 作为运行名称
-                config=vars(args)             # 记录所有超参数
-            )
+            
+            # 准备 wandb.init 的参数
+            wandb_init_params = {
+                'project': "UniFMIR-Finetune",
+                'name': args.save,
+                'config': vars(args)
+            }
+            
+            # 检查 args 中是否有 wandb_id (这是在 finetune_dinoir_v3_sr.py 中设置的)
+            if hasattr(args, 'wandb_id') and args.wandb_id:
+                print(f"--- [W&B] 正在尝试恢复运行，ID: {args.wandb_id} ---")
+                wandb_init_params['id'] = args.wandb_id
+                wandb_init_params['resume'] = "allow"
+            else:
+                print(f"--- [W&B] 正在启动新的运行... ---")
+
+            # 使用准备好的参数进行初始化
+            wandb.init(**wandb_init_params)
+
+            # (新) 如果这是一个新运行（不是恢复的），并且 wandb_id.txt 不存在，则创建它
+            if not wandb.run.resumed and ckp.ok: # ckp 是传入的 checkpoint 对象
+                wandb_id_file = os.path.join(ckp.dir, 'wandb_id.txt')
+                if not os.path.exists(wandb_id_file):
+                    try:
+                        with open(wandb_id_file, 'w') as f:
+                            f.write(wandb.run.id)
+                        print(f"--- [W&B] 已保存新运行 ID ({wandb.run.id}) 到 {wandb_id_file} ---")
+                    except Exception as e:
+                        print(f"--- [W&B] 警告：无法保存新的 wandb ID 文件。 {e} ---")
+            
             # (可选) 告诉 wandb 监控你的模型
             wandb.watch(my_model, log='all', log_freq=args.print_every)
-        
+
     def train(self):
         # 清理显存碎片
         if torch.cuda.is_available():
@@ -188,7 +256,7 @@ class Trainer():
         self.optimizer.schedule()
         
         print('save model Epoch%d' % epoch, loss)
-        self.model.save(self.dir + '/model/', epoch, is_best=False)
+        self.ckp.save(self, epoch, is_best=False)
 
     # # -------------------------- SR --------------------------
     def test(self, batch=0, epoch=None):
@@ -273,7 +341,7 @@ class Trainer():
             if psnrmean > self.bestpsnr:
                 self.bestpsnr = psnrmean
                 self.bestep = epoch
-                self.model.save(self.dir + '/model/', epoch, is_best=True)
+                self.ckp.save(self, epoch, is_best=True)
                 self.early_stop_counter = 0 # 重置计数器
                 self.ckp.write_log(f'[Epoch {epoch}] New best PSNR: {self.bestpsnr:.4f}. Resetting patience counter.')
             else:
@@ -454,7 +522,7 @@ class Trainer():
             if psnrm > self.bestpsnr:
                 self.bestpsnr = psnrm
                 self.bestep = epoch
-            self.model.save(self.dir + '/model/', epoch, is_best=(self.bestep == epoch))
+            self.ckp.save(self, epoch, is_best=(self.bestep == epoch))
         print('%%% ~~~~~~~~~~~~ %%% psnrm, self.bestpsnr, self.bestep ', psnrm, self.bestpsnr, self.bestep)
         torch.set_grad_enabled(True)
     
@@ -636,7 +704,7 @@ class Trainer():
             if psnrm > self.bestpsnr:
                 self.bestpsnr = psnrm
                 self.bestep = epoch
-            self.model.save(self.dir + '/model/', epoch, is_best=(self.bestep == epoch))
+            self.ckp.save(self, epoch, is_best=(self.bestep == epoch))
     
         print('+++++++++ meanSR++++++++++++', sum(pslst) / len(pslst), sum(sslst) / len(sslst))
         print('%%% ~~~~~~~~~~~~ %%% psnrm, self.bestpsnr, self.bestep ', psnrm, self.bestpsnr, self.bestep)
@@ -710,7 +778,7 @@ class Trainer():
             if psnrallm > self.bestpsnr:
                 self.bestpsnr = psnrallm
                 self.bestep = epoch
-            self.model.save(self.dir + '/model/', epoch, is_best=(self.bestep == epoch))
+            self.ckp.save(self, epoch, is_best=(self.bestep == epoch))
     
         print('+++++++++ meanSR condition %d++++++++++++' % condition, psnrallm, ssimallm)
         print('%%% ~~~~~~~~~~~~ %%% psnrm, self.bestpsnr, self.bestep ', psnrallm, self.bestpsnr, self.bestep)
@@ -866,7 +934,7 @@ class Trainer():
                 self.bestpsnr = psnrall
                 self.bestep = epoch
             if not self.args.test_only:
-                self.model.save(self.dir + '/model/', epoch, is_best=(self.bestep == epoch))
+                self.ckp.save(self, epoch, is_best=(self.bestep == epoch))
             print('+++++++++ meanSR++++++++++++', psnrall, ssimall)
             print('%%% ~~~~~~~~~~~~ %%% psnrm, self.bestpsnr, self.bestep ', psnrall, self.bestpsnr, self.bestep)
 

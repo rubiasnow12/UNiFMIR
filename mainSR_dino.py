@@ -159,7 +159,7 @@ def main():
 if __name__ == '__main__':
     datamin, datamax = 0, 100
     modelname = 'DINOIRv3'
-    testsetlst = ['F-actin']  #
+    testsetlst = ['Microtubules']  #
     test_only = True
     # modelpaths = [  './dinoir_v3_vitb_preloaded_scale2.pth',
     #                 './experiment/%smodel_best.pt',
@@ -171,7 +171,7 @@ if __name__ == '__main__':
     epoch = 1000
     rgb_range = 1
     lr = 0.00005
-    batch_size = 4
+    batch_size = 16
     patch_size = 128  # LR
     resume = 0
     iscpu = False
@@ -179,10 +179,10 @@ if __name__ == '__main__':
     test_every = 2000
 
 # 指定 DINOv3 预加载或微调后的权重文件路径
-    dino_checkpoint_path = 'experiment/DINOIRv3F-actin-vitb/model/model_best.pt'
+    dino_checkpoint_path = 'experiment/DINOIRv3Microtubules/model/model_97.pt'
 
     for testset in testsetlst:
-        savepath = '%s%s-vitb/' % (modelname, testset)
+        savepath = '%s%s/' % (modelname, testset)
         # modelpath = modelpath % savepath
 
         args = options()

@@ -192,10 +192,21 @@ def make_optimizer(args, target):
         optimizer_class = optim.RMSprop
         kwargs_optimizer['eps'] = args.epsilon
 
+    # #scheduler
+    # milestones = list(map(lambda x: int(x), args.decay.split('-')))
+    # kwargs_scheduler = {'milestones': milestones, 'gamma': args.gamma}
+    # scheduler_class = lrs.MultiStepLR
     # scheduler
-    milestones = list(map(lambda x: int(x), args.decay.split('-')))
-    kwargs_scheduler = {'milestones': milestones, 'gamma': args.gamma}
-    scheduler_class = lrs.MultiStepLR
+    if args.decay == 'cosine':
+        print('Using Cosine Annealing Scheduler')
+        scheduler_class = lrs.CosineAnnealingLR
+        # T_max 设为总 epoch 数，eta_min 是最小学习率（防止降为0）
+        kwargs_scheduler = {'T_max': args.epochs, 'eta_min': 1e-7}
+    else:
+        # 原有的手动 step 逻辑
+        milestones = list(map(lambda x: int(x), args.decay.split('-')))
+        kwargs_scheduler = {'milestones': milestones, 'gamma': args.gamma}
+        scheduler_class = lrs.MultiStepLR
 
     class CustomOptimizer(optimizer_class):
         def __init__(self, *args, **kwargs):
