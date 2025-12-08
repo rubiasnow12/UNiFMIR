@@ -231,10 +231,11 @@ class Trainer():
                 self.error_last = self.loss.log[-1, -1]
                 
                 if 'Denoising' in self.args.data_test:
-                    if 'mto1' in self.args.model:
-                        self.test3DdenoiseInchannel5(batch, epoch)
-                    else:
-                        self.test3DdenoiseT(batch, epoch)
+                    self.test3DdenoiseInchannel5(batch, epoch, condition=self.args.condition)
+                    # if 'mto1' in self.args.model:
+                    #     self.test3DdenoiseInchannel5(batch, epoch)
+                    # else:
+                    #     self.test3DdenoiseT(batch, epoch)
                 elif 'Isotropic' in self.args.data_test:
                     self.testiso_rotate(batch, epoch)
                 elif 'Flywing' in self.args.data_test:
@@ -423,7 +424,7 @@ class Trainer():
             for dp in range(0, len(inputlst), batchstep):
                 if dp + batchstep >= len(hr):
                     dp = len(hr) - batchstep
-                print(dp)  # 0, 10, .., 90
+                # print(dp)  # 0, 10, .., 90
                 lrtn = torch.concat(inputlst[dp:dp + batchstep], 0)  # [batch, inputchannel, h, w]
                 a = self.model(lrtn, 0)
                 a = torch.transpose(a, 1, 0)  # [1, batch, h, w]
@@ -510,6 +511,22 @@ class Trainer():
         psnrm = np.mean(np.array(pslst))
         ssimm = np.mean(np.array(sslst))
         print('psnr, ssim, num = ', psnrm, ssimm, num)
+
+        if not self.args.test_only:
+        # 计算全局步数，与 Loss 曲线对齐
+        # 注意：这里需要 ensure self.loader_train 是可用的
+            if self.loader_train:
+                global_step = (epoch - 1) * len(self.loader_train) + batch
+            else:
+                global_step = epoch # 如果是 test_only 模式可能没有 loader_train
+    
+            # 2. 记录到 W&B
+            if wandb.run is not None:
+                wandb.log({
+                    "PSNR/validation": psnrm,
+                    "SSIM/validation": ssimm,
+                    "epoch": epoch
+                }, step=global_step)
     
         if self.args.test_only:
             print('+++++++++ condition%d meanSR++++++++++++' % condition, sum(pslst) / len(pslst),

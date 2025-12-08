@@ -159,12 +159,13 @@ def main():
 if __name__ == '__main__':
     datamin, datamax = 0, 100
     modelname = 'DINOIRv3'
-    testsetlst = ['Microtubules']  #
+    # modelname = 'MultiDINOv3'
+    testsetlst = ['F-actin','CCPs','ER','Microtubules'] #
     test_only = True
-    # modelpaths = [  './dinoir_v3_vitb_preloaded_scale2.pth',
-    #                 './experiment/%smodel_best.pt',
-    #                 './experiment/%smodel_best147.pt',
-    #                 './experiment/%smodel_best.pt']
+    modelpaths = [  './experiment/DINOIRv3F-actin-frozen/model/model_106.pt',
+                    './experiment/DINOIRv3CCPs-frozen/model/model_80.pt',
+                    './experiment/DINOIRv3ER-frozen/model/model_171.pt',
+                    './experiment/DINOIRv3Microtubules-frozen/model/model_78.pt']
     normrange = 'Norm_0-100'  #
     
     scale = 2
@@ -179,15 +180,17 @@ if __name__ == '__main__':
     test_every = 2000
 
 # 指定 DINOv3 预加载或微调后的权重文件路径
-    dino_checkpoint_path = 'experiment/DINOIRv3Microtubules/model/model_97.pt'
+    # dino_checkpoint_path = 'experiment/MultiDINOOv3CCPs-multi/model/model_best.pt'
+    # dino_checkpoint_path = 'experiment/DINOIRv3ER-frozen/model/model_171.pt'  #
 
-    for testset in testsetlst:
-        savepath = '%s%s/' % (modelname, testset)
+    for testset, modelpath in zip(testsetlst,modelpaths):
+        savepath = '%s%s-frozen/' % (modelname, testset)
+        # savepath = 'DINOIRv3CCPs-multi/'
         # modelpath = modelpath % savepath
 
         args = options()
         # 把正确的 modelpath 传递给 args
-        args.modelpath = dino_checkpoint_path
+        args.modelpath = modelpath
         # 确保 resume 参数也被正确设置 (虽然 options() 内部设置了，这里可以再次确认)
         args.resume = resume
 

@@ -108,7 +108,7 @@ def options():
                         help='gradient clipping threshold (0 = no clipping)')
     
     # Loss specifications
-    parser.add_argument('--loss', type=str, default='1*L1+1.0*SSIM', help='loss function configuration')
+    parser.add_argument('--loss', type=str, default='1*L1+0.5*SSIM', help='loss function configuration')
     parser.add_argument('--skip_threshold', type=float, default='1e8',
                         help='skipping batch that has large error')
 
@@ -138,7 +138,7 @@ def main():
             batch_size=args.batch_size,
             shuffle=True,
             pin_memory=not args.cpu,
-            num_workers=0,
+            num_workers=8,
         )
     else:
         loader_train = None
@@ -169,21 +169,21 @@ def main():
 if __name__ == '__main__':
     datamin, datamax = 0, 100
     modelname = 'DINOIRv3'
-    testsetlst = ['CCPs','ER','Microtubules']
+    testsetlst = ['ER']
     test_only = False
     # modelpaths = [  './experiment/%smodel_best181.pt',
     #                 './experiment/%smodel_best.pt',
     #                 './experiment/%smodel_best147.pt',
     #                 './experiment/%smodel_best.pt']
     # initial_weights_path = './dinoir_v3_vitb_preloaded_scale2.pth'
-    # initial_weights_path = './experiment/DINOIRv3F-actin/model/model_best.pt'
+    # initial_weights_path = './experiment/DINOIRv3ER/model/model_100.pt'
     initial_weights_path = './dinoir_v3_vitb_preloaded.pth'  
     normrange = 'Norm_0-100'  #
     
     scale = 2
-    epoch = 100
+    epoch = 200
     rgb_range = 1 
-    lr = 5e-5
+    lr = 2e-5
     batch_size = 16
     patch_size =128 # LR
     resume = 0
@@ -192,7 +192,7 @@ if __name__ == '__main__':
     test_every = 2000
 
     for testset in testsetlst:
-        savepath = '%s%s/' % (modelname, testset)  #保存路径标记为 vitb
+        savepath = '%s%s-frozen/' % (modelname, testset)  #保存路径标记为 vitb
         
         args = options()
         

@@ -103,14 +103,36 @@ class DIV2K(data.Dataset):
         idx = self._get_index(idx)
         if self.train:
             lr, hr, filename = self.images_lr[idx], self.images_hr[idx], ''
+            
+            # === 新增：随机翻转和旋转增强 ===
+            # 1. 随机水平翻转
+            if np.random.rand() < 0.5:
+                lr = np.flip(lr, axis=1) # axis 1 is width
+                hr = np.flip(hr, axis=1)
+            
+            # 2. 随机垂直翻转
+            if np.random.rand() < 0.5:
+                lr = np.flip(lr, axis=0) # axis 0 is height
+                hr = np.flip(hr, axis=0)
+                
+            # 3. 随机旋转 90/180/270 度
+            k = np.random.randint(0, 4) # 0, 1, 2, 3
+            if k > 0:
+                lr = np.rot90(lr, k, axes=(0, 1))
+                hr = np.rot90(hr, k, axes=(0, 1))
+            # ===============================
+            
         else:
             lr, hr, filename = self.images_lr[idx], self.images_hr[idx], self.name[idx]
         
+        # 保持原有的 copy() 以避免内存负跨度问题
+        lr = np.ascontiguousarray(lr)
+        hr = np.ascontiguousarray(hr)
+
         hr = normalize(hr, datamin, datamax, clip=True) * self.args.rgb_range
         lr = normalize(lr, datamin, datamax, clip=True) * self.args.rgb_range
 
-
-        pair = (lr, hr)   # (128, 128, 3) (256, 256, 3)
+        pair = (lr, hr)
         pair_t = np2Tensor(*pair)
         
         return pair_t[0], pair_t[1], filename

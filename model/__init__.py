@@ -5,6 +5,7 @@ from model.enlcn import ProjectionUpdater
 import model.swinir as module
 # 添加
 import model.dinoir_v3 as dinoir_v3
+import model.multi_dinov3 as multi_dinoir_v3
 
 class Model(nn.Module):
     def __init__(self, args, ckp):
@@ -31,23 +32,56 @@ class Model(nn.Module):
         elif 'DINOIRv3' in args.model:  # 添加这个分支
             print('********** %s ***********' % args.model.lower())
             self.model = dinoir_v3.make_model(args).to(self.device)
+        elif 'MultiDINOv3' in args.model:  # 多尺度 DINOv3 分支
+            print('********** %s ***********' % args.model.lower())
+            self.model = multi_dinoir_v3.make_model(args).to(self.device)
         else:
             print('********** %s ***********' % args.model.lower())
             self.model = module.make_model(args).to(self.device)
 
 
-        if getattr(args, 'freeze_backbone', False): # 检查 'freeze_backbone' 标志
-            print("--- WARNING: Freezing DINOv3 backbone weights (all 'blocks.*') ---")
-            print("--- Training ONLY head and tail layers. ---")
+        # === 修改 model/__init__.py ===
+        if getattr(args, 'freeze_backbone', False):
+            print("--- 策略调整: 启用部分微调 (Partial Fine-tuning) ---")
+            print("--- 冻结前 9 层 (Blocks 0-8)，训练后 3 层 (Blocks 9-11) + Head/Tail ---")
             
-            # 遍历所有模型参数
+            # 1. 首先，让所有参数默认可训练 (包括 head, tail, conv_first 等)
+            for param in self.model.parameters():
+                param.requires_grad = True
+
+            # 2. 遍历参数，精确冻结 DINOv3 内部层
             for name, param in self.model.named_parameters():
-                if name.startswith('blocks.'):
-                    # 如果是 DINOv3 骨干 (Backbone)，则冻结
+                
+                # 冻结位置编码 (Position Embedding)，显微图像尺寸固定的话通常不需要微调
+                if "rope_embed" in name or "pos_embed" in name:
                     param.requires_grad = False
-                else:
-                    # 如果是头/尾 (conv_first, upsample, etc.)，保持可训练
-                    param.requires_grad = True      
+                
+                # 核心逻辑：处理 Transformer Blocks
+                if name.startswith('model.blocks.'): # 注意：根据你的架构可能需要加 'model.' 前缀，或者直接 'blocks.'
+                    try:
+                        # 解析层号，例如 "model.blocks.5.attn..." -> 5
+                        # 这里的 split('.') 索引取决于你的参数名结构，通常是第 2 个或第 3 个
+                        parts = name.split('.')
+                        layer_idx = -1
+                        for p in parts:
+                            if p.isdigit():
+                                layer_idx = int(p)
+                                break
+                        
+                        if layer_idx != -1:
+                            # 策略：冻结前 9 层 (0,1,2,3,4,5,6,7,8)
+                            if layer_idx < 9:
+                                param.requires_grad = False
+                            else:
+                                # 后 3 层 (9,10,11) 保持 True
+                                pass 
+                    except ValueError:
+                        pass
+            
+            # 打印一下验证，确保冻结正确
+            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in self.model.parameters())
+            print(f"--- 统计: 可训练参数 {trainable_params/1e6:.2f}M / 总参数 {total_params/1e6:.2f}M ({trainable_params/total_params:.1%}) ---")
 
         
         self.proj_updater = ProjectionUpdater(self.model, feature_redraw_interval=640)

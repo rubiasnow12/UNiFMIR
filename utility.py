@@ -61,8 +61,14 @@ class checkpoint():
         else:
             self.dir = os.path.join(rp, 'experiment', args.load)
             if os.path.exists(self.dir):
-                self.log = torch.load(self.get_path('psnr_log.pt'))
-                print('Continue from epoch {}...'.format(len(self.log)))
+                log_path = self.get_path('psnr_log.pt')
+                if os.path.exists(log_path):
+                    self.log = torch.load(log_path)
+                    print('Continue from epoch {}...'.format(len(self.log)))
+                else:
+                    self.log = torch.Tensor()
+                    print('Warning: psnr_log.pt not found, starting with empty log.')
+                # --- 修改结束 ---
             else:
                 args.load = ''
 
@@ -90,7 +96,7 @@ class checkpoint():
 
         # self.plot_psnr(epoch)
         trainer.optimizer.save(self.dir)
-        # torch.save(self.log, self.get_path('psnr_log.pt'))
+        torch.save(self.log, self.get_path('psnr_log.pt'))
 
     def add_log(self, log):
         self.log = torch.cat([self.log, log])
