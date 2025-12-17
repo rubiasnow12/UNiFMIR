@@ -169,7 +169,7 @@ def main():
 if __name__ == '__main__':
     datamin, datamax = 0, 100
     modelname = 'DINOIRv3'
-    testsetlst = ['ER']
+    testsetlst = ['F-actin','CCPs','ER','Microtubules']
     test_only = False
     # modelpaths = [  './experiment/%smodel_best181.pt',
     #                 './experiment/%smodel_best.pt',
@@ -211,21 +211,7 @@ if __name__ == '__main__':
         args.patch_size = patch_size # Ensure correct patch size
         args.save = savepath       # Ensure correct save path is passed
 
-        # 如果命令行没有提供 wandb_id，则尝试从之前保存的 wandb_id.txt 读取
-        # if args.wandb_id is None:
-        #     wandb_id_file = os.path.join(args.save, 'wandb_id.txt')
-        #     if os.path.exists(wandb_id_file):
-        #         with open(wandb_id_file, 'r') as f:
-        #             args.wandb_id = f.read().strip() or None
-        #     else:
-        #         # 可选：把默认 id 写在这里（不推荐长期硬编码）
-        #         args.wandb_id = 'jhky6d4s'
-        #         pass
-
-        # args.data_test = testset   # Ensure correct dataset is used for loading data
-        if args.resume != 0 and args.load == '':
-            args.load = args.save
-            print(f"Auto-setting args.load = '{args.save}' to load optimizer state.")
+        
         
         torch.manual_seed(args.seed)
         checkpoint = utility.checkpoint(args)

@@ -13,8 +13,8 @@ except Exception as e:
     sys.exit(1)
 
 # 2. 定义 DINOv3 ViT-B 权重文件的路径
-dino_checkpoint_path = 'dinov3_vitb16_pretrain.pth' 
-output_checkpoint_path = 'dinoir_v3_vitb_preloaded_multi-scale.pth'  # ← 输出文件名
+dino_checkpoint_path = 'dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth' 
+output_checkpoint_path = 'dinoir_v3_vitb_preloaded.pth'  # ← 输出文件名
 
 if not os.path.exists(dino_checkpoint_path):
     print(f"错误: 未找到 DINOv3 权重文件 '{dino_checkpoint_path}'")

@@ -57,7 +57,7 @@ class Model(nn.Module):
                     param.requires_grad = False
                 
                 # 核心逻辑：处理 Transformer Blocks
-                if name.startswith('model.blocks.'): # 注意：根据你的架构可能需要加 'model.' 前缀，或者直接 'blocks.'
+                if name.startswith('blocks.'):# 可能 'model.' 前缀，或者直接 'blocks.' 
                     try:
                         # 解析层号，例如 "model.blocks.5.attn..." -> 5
                         # 这里的 split('.') 索引取决于你的参数名结构，通常是第 2 个或第 3 个
