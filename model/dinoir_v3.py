@@ -860,13 +860,16 @@ class Upsample(nn.Sequential):
     """Upsample module.
 
     Args:
-        scale (int): Scale factor. Supported scales: 2^n and 3.
+        scale (int): Scale factor. Supported scales: 1, 2^n and 3.
         num_feat (int): Channel number of intermediate features.
     """
 
     def __init__(self, scale, num_feat):
         m = []
-        if (scale & (scale - 1)) == 0:  # scale = 2^n
+        if scale == 1:
+            # scale=1 表示不需要上采样 (denoise 任务)
+            m.append(nn.Identity())
+        elif (scale & (scale - 1)) == 0:  # scale = 2^n
             for _ in range(int(math.log(scale, 2))):
                 m.append(nn.Conv2d(num_feat, 4 * num_feat, 3, 1, 1))
                 m.append(nn.PixelShuffle(2))
@@ -876,7 +879,7 @@ class Upsample(nn.Sequential):
         elif scale == 11:
             m.append(torch.nn.Upsample(scale_factor=scale))
         else:
-            raise ValueError(f'scale {scale} is not supported. ' 'Supported scales: 2^n and 3.')
+            raise ValueError(f'scale {scale} is not supported. ' 'Supported scales: 1, 2^n and 3.')
         super(Upsample, self).__init__(*m)
 
 

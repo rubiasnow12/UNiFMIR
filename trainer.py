@@ -101,7 +101,9 @@ class Trainer():
                 wandb_init_params['resume'] = "allow"
             else:
                 print(f"--- [W&B] 正在启动新的运行... ---")
-
+                # === 强制生成新 ID ===
+                wandb_init_params['id'] = wandb.util.generate_id()
+                wandb_init_params['resume'] = "allow"
             # 使用准备好的参数进行初始化
             wandb.init(**wandb_init_params)
 

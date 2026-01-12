@@ -162,14 +162,14 @@ if __name__ == '__main__':
     datamin, datamax = 0, 100
     modelname = 'SwinIR'
     # testsetlst = ['F-actin','CCPs','ER','Microtubules']  #
-    testsetlst = ['Microtubules']  #
+    testsetlst = ['CCPs']  #
     test_only = True
     # modelpaths = [  './experiment/%smodel_best181.pt',
     #                 './experiment/%smodel_best.pt',
     #                 './experiment/%smodel_best147.pt',
     #                 './experiment/%smodel_best.pt']
     modelpaths = [  
-                            './experiment/%smodel_best.pt']
+                            './experiment/%smodel_best181.pt']
     normrange = 'Norm_0-100'  #
     
     scale = 2

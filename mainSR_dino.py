@@ -160,12 +160,14 @@ if __name__ == '__main__':
     datamin, datamax = 0, 100
     modelname = 'DINOIRv3'
     # modelname = 'MultiDINOv3'
-    testsetlst = ['F-actin','CCPs','ER','Microtubules'] #
+    # testsetlst = ['F-actin','CCPs','ER','Microtubules'] 
+    testsetlst = ['ER']
     test_only = True
-    modelpaths = [  './experiment/DINOIRv3F-actin-frozen/model/model_106.pt',
-                    './experiment/DINOIRv3CCPs-frozen/model/model_80.pt',
-                    './experiment/DINOIRv3ER-frozen/model/model_171.pt',
-                    './experiment/DINOIRv3Microtubules-frozen/model/model_78.pt']
+    # modelpaths = [  './experiment/DINOIRv3F-actin-frozen/model/model_106.pt',
+    #                 './experiment/DINOIRv3CCPs-frozen/model/model_80.pt',
+    #                 './experiment/DINOIRv3ER-frozen/model/model_171.pt',
+    #                 './experiment/DINOIRv3Microtubules-frozen/model/model_78.pt']
+    modelpaths = './experiment/DINOIRv3ER-frozen/model/model_159.pt',
     normrange = 'Norm_0-100'  #
     
     scale = 2

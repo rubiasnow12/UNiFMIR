@@ -6,6 +6,7 @@ import model.swinir as module
 # 添加
 import model.dinoir_v3 as dinoir_v3
 import model.multi_dinov3 as multi_dinoir_v3
+import model.universal_dino as module_dino
 
 class Model(nn.Module):
     def __init__(self, args, ckp):
@@ -35,6 +36,10 @@ class Model(nn.Module):
         elif 'MultiDINOv3' in args.model:  # 多尺度 DINOv3 分支
             print('********** %s ***********' % args.model.lower())
             self.model = multi_dinoir_v3.make_model(args).to(self.device)
+        elif 'universal' in args.model.lower() or 'dino' in args.model.lower():
+            print('********** %s (Universal DINO) ***********' % args.model.lower())
+            # 调用 universal_dino.py 里的 make_model 函数
+            self.model = module_dino.make_model(args).to(self.device)
         else:
             print('********** %s ***********' % args.model.lower())
             self.model = module.make_model(args).to(self.device)
@@ -82,7 +87,21 @@ class Model(nn.Module):
             trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
             total_params = sum(p.numel() for p in self.model.parameters())
             print(f"--- 统计: 可训练参数 {trainable_params/1e6:.2f}M / 总参数 {total_params/1e6:.2f}M ({trainable_params/total_params:.1%}) ---")
+# # === 全量微调 (Full Fine-tuning) ===
+#         # 所有参数可训练，仅冻结位置编码
+#         for param in self.model.parameters():
+#             param.requires_grad = True
+        
+#         # 冻结位置编码 (RoPE/Position Embedding)
+#         for name, param in self.model.named_parameters():
+#             if "rope_embed" in name or "pos_embed" in name:
+#                 param.requires_grad = False
+        
+#         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+#         total_params = sum(p.numel() for p in self.model.parameters())
+#         print(f"--- 全量微调 (冻结位置编码): 可训练 {trainable_params/1e6:.2f}M / 总参数 {total_params/1e6:.2f}M ({trainable_params/total_params:.1%}) ---")
 
+        
         
         self.proj_updater = ProjectionUpdater(self.model, feature_redraw_interval=640)
         if args.precision == 'half':

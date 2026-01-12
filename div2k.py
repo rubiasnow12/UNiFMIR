@@ -10,8 +10,8 @@ sys.path.append('..')
 from csbdeep.utils import normalize, axes_dict, axes_check_and_normalize, backend_channels_last, move_channel_for_backend
 from csbdeep.io import load_training_data
 
-CSB_path = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/CSB'
-VCD_path = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/VCD'
+CSB_path = './CSB'
+VCD_path = './VCD'
 
 datamin, datamax = 0, 100  
 
@@ -244,10 +244,22 @@ class Flourescenedenoise(data.Dataset):
                 hr.append(self.nm_hrdenoise[idn])
                 lr.append(self.nm_lrdenoise[idn])
     
-            rgb = np.squeeze(np.concatenate(hr, -1))
-            rgblr = np.squeeze(np.concatenate(lr, -1))
-            rgb = np.transpose(np.float32(rgb), (2, 0, 1))  # [1, 256, 256]
-            rgblr = np.transpose(np.float32(rgblr), (2, 0, 1))
+            # ========== 修复: 正确处理单通道数据 ==========
+            # 原始数据形状: (64, 64, 1)，不能用 squeeze 去掉最后一维
+            rgb = np.concatenate(hr, -1)      # (64, 64, 1)
+            rgblr = np.concatenate(lr, -1)    # (64, 64, 1)
+            rgb = np.transpose(np.float32(rgb), (2, 0, 1))      # (1, 64, 64)
+            rgblr = np.transpose(np.float32(rgblr), (2, 0, 1))  # (1, 64, 64)
+        
+        # ========== 去噪任务需要 percentile 归一化 ==========
+        # 训练和测试都用相同的归一化方式，确保一致性
+        def percentile_norm(x, pmin=2, pmax=99.8):
+            mi = np.percentile(x, pmin)
+            ma = np.percentile(x, pmax)
+            return np.clip((x - mi) / (ma - mi + 1e-20), 0, 1)
+        
+        rgblr = percentile_norm(rgblr)
+        rgb = percentile_norm(rgb)
         
         return rgblr, rgb, ''
 

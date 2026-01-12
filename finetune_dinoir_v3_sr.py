@@ -1,14 +1,16 @@
 import torch
 import utility
 import loss
+import div2k
+import time 
+import shutil 
 from trainer import Trainer
-torch.backends.cudnn.enabled = False
+# torch.backends.cudnn.enabled = False
 import argparse
 from div2k import DIV2K
 from torch.utils.data import dataloader
 import model
 import os
-
 
 def options():
     parser = argparse.ArgumentParser(description='EDSR and MDSR')
@@ -132,13 +134,15 @@ def options():
 
 
 def main():
+
+
     if not args.test_only:
         loader_train = dataloader.DataLoader(
             DIV2K(args, name=testset, train=True, benchmark=False),
             batch_size=args.batch_size,
             shuffle=True,
             pin_memory=not args.cpu,
-            num_workers=8,
+            num_workers=4,
         )
     else:
         loader_train = None
