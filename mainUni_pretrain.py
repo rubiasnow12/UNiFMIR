@@ -1,3 +1,4 @@
+from csbdeep.models import pretrained
 import torch
 torch.backends.cudnn.enabled = False
 import utility
@@ -15,6 +16,7 @@ import imageio
 import numpy as np
 from tifffile import imsave
 import random
+from model.dinoir_v3 import DinoUniModel 
 
 
 gpu = torch.cuda.is_available()
@@ -24,7 +26,7 @@ def options():
     parser = argparse.ArgumentParser(description='FMIR Model')
     parser.add_argument('--task', type=int, default=-1)
     parser.add_argument('--model', default='Uni-SwinIR', help='model name')
-    parser.add_argument('--save', type=str, default='Uni-SwinIR-pretrain', help='file name to save')
+    parser.add_argument('--save', type=str, default='Uni-DINOv3-pretrain', help='file name to save')
     parser.add_argument('--test_only', action='store_true', default=testonly, help='set this option to test the model')
     parser.add_argument('--cpu', action='store_true', default=not gpu, help='cpu only')
     parser.add_argument('--resume', type=int, default=0, help='-2:best;-1:latest; 0:pretrain; >0: resume')
@@ -949,11 +951,11 @@ class PreTrainer():
 
 
 if __name__ == '__main__':
-    srdatapath = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/CSB/DataSet/BioSR_WF_to_SIM/DL-SR-main/dataset/'
-    denoisedatapath = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/CSB/DataSet/'
-    isodatapath = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/CSB/DataSet/Isotropic/'
-    prodatapath = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/CSB/DataSet/'
-    voldatapath = '/home/yifanyang/hwq/UniFMIRproject/UNiFMIR/VCD/vcdnet/'
+    srdatapath = './CSB/DataSet/BioSR_WF_to_SIM/DL-SR-main/dataset/'
+    denoisedatapath = './CSB/DataSet/'
+    isodatapath = './CSB/DataSet/Isotropic/'
+    prodatapath = './CSB/DataSet/'
+    voldatapath = './VCD/vcdnet/'
     
     pretrain = '.'
     testonly = False  # True  #
@@ -962,9 +964,24 @@ if __name__ == '__main__':
     torch.manual_seed(args.seed)
     checkpoint = utility.checkpoint(args)
     assert checkpoint.ok
-    unimodel = model.UniModel(args, tsk=-1)
+    # unimodel = model.UniModel(args, tsk=-1)
+    unimodel = DinoUniModel(args)
+    # 1. 实例化 DINO 多任务模型
+    # 确保传入 ViT-B 的维度参数
+    unimodel = DinoUniModel(args, embed_dim=768, dino_depth=12, dino_num_heads=12)
 
+    # 2. 【关键步骤】加载预加载的 DINO 权重
+    # 这样主干网络就不是随机初始化的，而是有 ImageNet 知识的
+    preloaded_path = './dinoir_v3_vitb_preloaded.pth' 
+    if os.path.exists(preloaded_path):
+        print(f"Loading preloaded DINO weights from {preloaded_path}")
+        state_dict = torch.load(preloaded_path)
+        unimodel.load_state_dict(state_dict, strict=False) # strict=False 因为头尾权重是空的
+    else:
+        print("Warning: Preloaded weights not found, starting from scratch!")
+    
     _model = model.Model(args, checkpoint, unimodel)
+
 
     _loss = loss.Loss(args, checkpoint) if not args.test_only else None
     t = PreTrainer(args, _model, _loss, checkpoint)

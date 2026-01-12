@@ -165,15 +165,12 @@ gradio_cached_examples/
 exampledata*
 *.tgz
 *.pth
-
-
-
 # === UNiFMIR 项目数据集与大文件 ===
 VCD/vcdnet/
-CSB/DataSet/
+CSB/
 DeepBacs/
 Shareloc/
-wandb/
+
 # 自动忽略所有压缩包及其解压后的数据
 *.tar
 *.tar.gz
@@ -182,3 +179,6 @@ wandb/
 *_val/
 *_data/
 
+output.tif
+# Ignore wandb logs
+wandb/
