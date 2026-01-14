@@ -38,6 +38,8 @@ def options():
     parser.add_argument('--patch_size', type=int, default=64, help='input batch size for training')
     parser.add_argument('--rgb_range', type=int, default=1, help='maximum value of RGBn_colors')
     parser.add_argument('--n_colors', type=int, default=1, help='')
+    parser.add_argument('--inch', type=int, default=1, help='input channel number') # 添加这一行
+    
     parser.add_argument('--datamin', type=int, default=0)
     parser.add_argument('--datamax', type=int, default=100)
 
