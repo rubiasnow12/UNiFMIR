@@ -324,12 +324,15 @@ dtype_dict = {
 }
 
 
+# def make_model(args):
+#     try:
+#         inch = int(args.inputchannel)
+#     except:
+#         inch = 1
+#     return dinov3(upscale=int(args.scale[0]), in_chans=inch)
+
 def make_model(args):
-    try:
-        inch = int(args.inputchannel)
-    except:
-        inch = 1
-    return dinov3(upscale=int(args.scale[0]), in_chans=inch)
+    return DinoUniModel(args)
 
 
 def make_modelproj(args):
@@ -984,3 +987,108 @@ class UNetA(nn.Module):
         x = F.interpolate(x, size=(H * self.upscale, W * self.upscale), mode='bilinear')
         x = torch.tanh(x)
         return x
+
+
+class DinoUniModel(nn.Module):
+    def __init__(self, args, embed_dim=768, dino_depth=12, dino_num_heads=12, vit_patch_size=8):
+        super(DinoUniModel, self).__init__()
+        self.task = 1
+        self.img_range = 1.0
+        self.mean = torch.zeros(1, 1, 1, 1)
+        self.embed_dim = embed_dim
+        self.vit_patch_size = vit_patch_size
+
+        # --- 任务特定头 (Heads) ---
+        # 1. SR
+        self.conv_firstsr = nn.Conv2d(1, embed_dim, 3, 1, 1)
+        # 2. Denoise (5通道输入)
+        self.conv_firstdT = nn.Conv2d(5, embed_dim, 3, 1, 1)
+        # 3. Isotropic
+        self.conv_firstiso = nn.Conv2d(1, embed_dim, 3, 1, 1)
+        # 4. Projection
+        self.project = ENLCN(args=args)
+        self.conv_firstproj = nn.Conv2d(1, embed_dim, 3, 1, 1)
+        # 5. Volumetric (2D to 3D)
+        self.conv_first0 = UNetA(121, 61)
+        self.conv_firstv = nn.Conv2d(61, embed_dim, 3, 1, 1)
+
+        # --- 共享主体 (Backbone) ---
+        self.patch_embed = PatchEmbed(patch_size=vit_patch_size, in_chans=embed_dim, embed_dim=embed_dim)
+        self.rope_embed = RopePositionEmbedding(embed_dim=embed_dim, num_heads=dino_num_heads)
+        self.blocks = nn.ModuleList([
+            SelfAttentionBlock(dim=embed_dim, num_heads=dino_num_heads, drop_path=0.1)
+            for _ in range(dino_depth)
+        ])
+        self.norm = nn.LayerNorm(embed_dim)
+        self.patch_unembed = PatchUnEmbed(embed_dim=embed_dim)
+        self.conv_after_body = nn.Conv2d(embed_dim, embed_dim, 3, 1, 1)
+
+        # --- 任务特定尾 (Tails) ---
+        self.conv_before_upsample0 = nn.Sequential(nn.Conv2d(embed_dim, 32, 3, 1, 1), nn.LeakyReLU(inplace=True))
+        self.upsamplesr = Upsample(scale=2, num_feat=32) # Task 1
+        self.upsample_common = Upsample(scale=1, num_feat=32) # Task 2, 3
+        self.conv_last0 = nn.Conv2d(32, 1, 3, 1, 1)
+        
+        # Task 5 特有尾部
+        self.conv_before_upsamplev = nn.Sequential(nn.Conv2d(embed_dim, embed_dim, 3, 1, 1), nn.LeakyReLU(inplace=True))
+        self.conv_lastv = nn.Conv2d(embed_dim, 61, 3, 1, 1)
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if m.bias is not None: nn.init.constant_(m.bias, 0)
+
+    def forward_features(self, x):
+        B, C, H, W = x.shape
+        grid_h, grid_w = H // self.vit_patch_size, W // self.vit_patch_size
+        x = self.patch_embed(x)
+        cos, sin = self.rope_embed(grid_h, grid_w)
+        for blk in self.blocks:
+            x = blk(x, cos, sin)
+        x = self.norm(x)
+        x = self.patch_unembed(x, (grid_h, grid_w))
+        return self.conv_after_body(x)
+
+    def forward(self, x, tsk=0):
+        if tsk > 0: self.task = tsk
+        self.mean = self.mean.type_as(x)
+        
+        # --- Head 阶段 ---
+        if self.task == 1: 
+            x = self.conv_firstsr((x - self.mean) * self.img_range)
+
+        elif self.task == 2: 
+            # 针对去噪任务的特殊处理：将输入归一化并调整通道
+            x_input = (x - self.mean) * self.img_range
+            # 如果输入是单通道（Planaria），将其复制为 5 通道以匹配 conv_firstdT 的权重形状
+            if x_input.shape[1] == 1:
+                x_input = x_input.repeat(1, 5, 1, 1)
+            x = self.conv_firstdT(x_input)
+            
+        elif self.task == 3: 
+            x = self.conv_firstiso((x - self.mean) * self.img_range)
+        elif self.task == 4:
+            x2d, _ = self.project(x)
+            x = self.conv_firstproj((x2d - self.mean) * self.img_range)
+        elif self.task == 5:
+            xunet = self.conv_first0(x)
+            x = self.conv_firstv(xunet)
+
+        # --- Body 阶段 ---
+        xfe = self.forward_features(x)
+
+        # --- Tail 阶段 ---
+        if self.task in [1, 2, 3]:
+            x = self.conv_before_upsample0(xfe + x)
+            x = self.upsamplesr(x) if self.task == 1 else self.upsample_common(x)
+            x = self.conv_last0(x)
+        elif self.task == 4:
+            x = self.conv_last0(self.conv_before_upsample0(xfe))
+            return x2d, x / self.img_range + self.mean + x2d
+        elif self.task == 5:
+            x = self.conv_lastv(self.conv_before_upsamplev(xfe))
+            return xunet, x / self.img_range + self.mean
+
+        return x / self.img_range + self.mean

@@ -6,7 +6,7 @@ import os
 # 1. 导入我们修改后的模型
 print("正在导入 'make_model' 从 'model.dinoir_v3'...")
 try:
-    from model.dinoir_v3 import dinov3  # 直接导入类以便更灵活地创建
+    from model.dinoir_v3 import DinoUniModel  # 直接导入类以便更灵活地创建
     print("...导入成功！")
 except Exception as e:
     print(f"导入失败: {e}")
@@ -20,20 +20,25 @@ if not os.path.exists(dino_checkpoint_path):
     print(f"错误: 未找到 DINOv3 权重文件 '{dino_checkpoint_path}'")
     sys.exit(1)
 
-# 3. 创建一个 "通用" 的 dinov3 模型实例
-#    这里使用 upscale=2 和 in_chans=3，因为：
-#    - DINOv3 backbone (blocks) 不依赖于 upscale 或 in_chans
-#    - 我们只需要加载 backbone 权重，head/tail 会在微调时重新初始化
-print("正在实例化 dinoir_v3 (ViT-B 尺寸) 模型...")
 
-# 直接实例化，使用默认参数
-model = dinov3(
-    in_chans=3,      # 伪三通道（与 DINOv3 预训练一致）
-    upscale=2,       # 任意值，backbone 不依赖这个
-    embed_dim=768,   # ViT-B 的 embed_dim
-    dino_depth=12,   # ViT-B 有 12 层
-    dino_num_heads=12,  # ViT-B 有 12 个头
+# 3. 创建一个模拟的 'args' 对象
+# 这样 DinoUniModel 在初始化投影头 (ENLCN) 时，就能找到 n_resblocks 等参数，不会报错
+mock_args = argparse.Namespace()
+mock_args.n_resblocks = 8  # 这是 UniFMIR 的默认参数
+mock_args.n_feats = 32     # 这是 UniFMIR 的默认参数
+mock_args.scale = [1]      # 缩放倍率默认设为 1
+mock_args.inch = 1      # ← 加上这一行，解决 'inch' 缺失的问题
+
+print("正在实例化 DinoUniModel (ViT-B 尺寸) 模型...")
+
+# 实例化模型，关键点是把 args=None 改成 args=mock_args
+model = DinoUniModel(
+    args=mock_args,      # ← 修改这里，传入模拟的参数对象
+    embed_dim=768,       # ViT-B 的维度
+    dino_depth=12,       # ViT-B 的深度
+    dino_num_heads=12,   # ViT-B 的头数
 )
+
 model_state_dict = model.state_dict()
 print("...模型实例化成功。")
 print(f"模型参数数量: {sum(p.numel() for p in model.parameters()):,}")
