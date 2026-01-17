@@ -9,7 +9,7 @@ import model.multi_dinov3 as multi_dinoir_v3
 import model.universal_dino as module_dino
 
 class Model(nn.Module):
-    def __init__(self, args, ckp):
+    def __init__(self, args, ckp, unimodel=None):
         super(Model, self).__init__()
         print('Making model...')
 
@@ -24,7 +24,11 @@ class Model(nn.Module):
         self.save_models = args.save_models
         self.args = args
         
-        if 'proj' in args.model:
+        # 如果外部传入了预创建的 unimodel（如 DinoUniModel），直接使用
+        if unimodel is not None:
+            print('********** Using pre-initialized Universal DINO model ***********')
+            self.model = unimodel.to(self.device)
+        elif 'proj' in args.model:
             print('********** %s ***********' % args.model.lower())
             self.model = module.make_modelproj(args).to(self.device)
         elif 'SwinIR2t3' in args.model:
@@ -44,49 +48,56 @@ class Model(nn.Module):
             print('********** %s ***********' % args.model.lower())
             self.model = module.make_model(args).to(self.device)
 
+        # === 全参数微调 (Full Fine-tuning) ===
+        # 联合预训练阶段：所有参数可训练，学习显微镜通用表征
+        for param in self.model.parameters():
+            param.requires_grad = True
+        
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.model.parameters())
+        print(f"--- 全参数微调: 可训练 {trainable_params/1e6:.2f}M / 总参数 {total_params/1e6:.2f}M ({trainable_params/total_params:.1%}) ---")
 
-        # === 修改 model/__init__.py ===
-        if getattr(args, 'freeze_backbone', False):
-            print("--- 策略调整: 启用部分微调 (Partial Fine-tuning) ---")
-            print("--- 冻结前 9 层 (Blocks 0-8)，训练后 3 层 (Blocks 9-11) + Head/Tail ---")
+        # if getattr(args, 'freeze_backbone', False):
+        #     print("--- 策略调整: 启用部分微调 (Partial Fine-tuning) ---")
+        #     print("--- 冻结前 9 层 (Blocks 0-8)，训练后 3 层 (Blocks 9-11) + Head/Tail ---")
             
-            # 1. 首先，让所有参数默认可训练 (包括 head, tail, conv_first 等)
-            for param in self.model.parameters():
-                param.requires_grad = True
+        #     # 1. 首先，让所有参数默认可训练 (包括 head, tail, conv_first 等)
+        #     for param in self.model.parameters():
+        #         param.requires_grad = True
 
-            # 2. 遍历参数，精确冻结 DINOv3 内部层
-            for name, param in self.model.named_parameters():
+        #     # 2. 遍历参数，精确冻结 DINOv3 内部层
+        #     for name, param in self.model.named_parameters():
                 
-                # 冻结位置编码 (Position Embedding)，显微图像尺寸固定的话通常不需要微调
-                if "rope_embed" in name or "pos_embed" in name:
-                    param.requires_grad = False
+        #         # 冻结位置编码 (Position Embedding)，显微图像尺寸固定的话通常不需要微调
+        #         if "rope_embed" in name or "pos_embed" in name:
+        #             param.requires_grad = False
                 
-                # 核心逻辑：处理 Transformer Blocks
-                if name.startswith('blocks.'):# 可能 'model.' 前缀，或者直接 'blocks.' 
-                    try:
-                        # 解析层号，例如 "model.blocks.5.attn..." -> 5
-                        # 这里的 split('.') 索引取决于你的参数名结构，通常是第 2 个或第 3 个
-                        parts = name.split('.')
-                        layer_idx = -1
-                        for p in parts:
-                            if p.isdigit():
-                                layer_idx = int(p)
-                                break
+        #         # 核心逻辑：处理 Transformer Blocks
+        #         if name.startswith('blocks.'):# 可能 'model.' 前缀，或者直接 'blocks.' 
+        #             try:
+        #                 # 解析层号，例如 "model.blocks.5.attn..." -> 5
+        #                 # 这里的 split('.') 索引取决于你的参数名结构，通常是第 2 个或第 3 个
+        #                 parts = name.split('.')
+        #                 layer_idx = -1
+        #                 for p in parts:
+        #                     if p.isdigit():
+        #                         layer_idx = int(p)
+        #                         break
                         
-                        if layer_idx != -1:
-                            # 策略：冻结前 9 层 (0,1,2,3,4,5,6,7,8)
-                            if layer_idx < 9:
-                                param.requires_grad = False
-                            else:
-                                # 后 3 层 (9,10,11) 保持 True
-                                pass 
-                    except ValueError:
-                        pass
+        #                 if layer_idx != -1:
+        #                     # 策略：冻结前 9 层 (0,1,2,3,4,5,6,7,8)
+        #                     if layer_idx < 9:
+        #                         param.requires_grad = False
+        #                     else:
+        #                         # 后 3 层 (9,10,11) 保持 True
+        #                         pass 
+        #             except ValueError:
+        #                 pass
             
-            # 打印一下验证，确保冻结正确
-            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-            total_params = sum(p.numel() for p in self.model.parameters())
-            print(f"--- 统计: 可训练参数 {trainable_params/1e6:.2f}M / 总参数 {total_params/1e6:.2f}M ({trainable_params/total_params:.1%}) ---")
+        #     # 打印一下验证，确保冻结正确
+        #     trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        #     total_params = sum(p.numel() for p in self.model.parameters())
+        #     print(f"--- 统计: 可训练参数 {trainable_params/1e6:.2f}M / 总参数 {total_params/1e6:.2f}M ({trainable_params/total_params:.1%}) ---")
 # # === 全量微调 (Full Fine-tuning) ===
 #         # 所有参数可训练，仅冻结位置编码
 #         for param in self.model.parameters():
@@ -115,12 +126,15 @@ class Model(nn.Module):
         print(self.model, file=ckp.log_file)
 
     def forward(self, x, *args, **kwargs):
+        # 提取任务 ID（如果有）
+        task_id = args[0] if len(args) > 0 else kwargs.get('tsk', 0)
         
+        # 任务5 (Volume) 使用特殊的 11x 上采样，不适合 forward_chop
         # 直接调用模型
-        if self.args.chop:
-            result = self.forward_chop(x, min_size=600000)
+        if self.args.chop and task_id != 5:
+            result = self.forward_chop(x, task_id=task_id, min_size=600000)
         else:
-            result = self.model(x)
+            result = self.model(x, task_id)
         return result
 
     def get_model(self):
@@ -277,7 +291,7 @@ class Model(nn.Module):
                                    f'{crt_net[k].shape}; load_net: {load_net[k].shape}')
                     load_net[k + '.ignore'] = load_net.pop(k)
 
-    def forward_chop(self, x, shave=10, min_size=6000):
+    def forward_chop(self, x, task_id=0, shave=10, min_size=6000):
         scale = self.scale
         n_GPUs = min(self.n_GPUs, 4)
         b, _, h, w = x.size()
@@ -296,21 +310,35 @@ class Model(nn.Module):
 
         if w_size * h_size < min_size:
             sr_list = []
+            sr_stg1_list = []  # 用于存储第一阶段输出（任务4和5）
             for i in range(0, 4, n_GPUs):
                 lr_batch = torch.cat(lr_list[i:(i + n_GPUs)], dim=0)
-                sr_batch = self.model(lr_batch)
-                sr_list.extend(sr_batch.chunk(n_GPUs, dim=0))
+                result = self.model(lr_batch, task_id)
+                # 检查是否是 tuple（任务4和5返回两个输出）
+                if isinstance(result, tuple):
+                    sr_stg1_batch, sr_batch = result
+                    sr_stg1_list.extend(sr_stg1_batch.chunk(n_GPUs, dim=0))
+                    sr_list.extend(sr_batch.chunk(n_GPUs, dim=0))
+                else:
+                    sr_list.extend(result.chunk(n_GPUs, dim=0))
         else:
-            sr_list = [
-                self.forward_chop(patch, shave=shave, min_size=min_size)\
+            results = [
+                self.forward_chop(patch, task_id=task_id, shave=shave, min_size=min_size)\
                 for patch in lr_list]
+            # 分离可能的 tuple 结果
+            if isinstance(results[0], tuple):
+                sr_stg1_list = [r[0] for r in results]
+                sr_list = [r[1] for r in results]
+            else:
+                sr_list = results
+                sr_stg1_list = []
 
         h, w = scale * h, scale * w
         h_half, w_half = scale * h_half, scale * w_half
         h_size, w_size = scale * h_size, scale * w_size
         shave *= scale
 
-        output = x.new(b, 1, h, w)
+        output = x.new(b, sr_list[0].shape[1], h, w)
         output[:, :, 0:h_half, 0:w_half] \
             = sr_list[0][:, :, 0:h_half, 0:w_half]
         output[:, :, 0:h_half, w_half:w] \
@@ -319,6 +347,19 @@ class Model(nn.Module):
             = sr_list[2][:, :, (h_size - h + h_half):h_size, 0:w_half]
         output[:, :, h_half:h, w_half:w] \
             = sr_list[3][:, :, (h_size - h + h_half):h_size, (w_size - w + w_half):w_size]
+
+        # 如果有第一阶段输出，组合第一阶段的 output
+        if sr_stg1_list:
+            output_stg1 = x.new(b, sr_stg1_list[0].shape[1], h, w)
+            output_stg1[:, :, 0:h_half, 0:w_half] \
+                = sr_stg1_list[0][:, :, 0:h_half, 0:w_half]
+            output_stg1[:, :, 0:h_half, w_half:w] \
+                = sr_stg1_list[1][:, :, 0:h_half, (w_size - w + w_half):w_size]
+            output_stg1[:, :, h_half:h, 0:w_half] \
+                = sr_stg1_list[2][:, :, (h_size - h + h_half):h_size, 0:w_half]
+            output_stg1[:, :, h_half:h, w_half:w] \
+                = sr_stg1_list[3][:, :, (h_size - h + h_half):h_size, (w_size - w + w_half):w_size]
+            return output_stg1, output
 
         return output
 

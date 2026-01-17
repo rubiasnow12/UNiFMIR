@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
+import copy
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from model.enlcn import ENLCN
 # from typing import Optional, Tuple, Union, Callable
@@ -187,9 +188,13 @@ class RopePositionEmbedding(nn.Module):
         coords = coords.reshape(H * W, 2)
         return coords
 
-    def forward(self, H: int, W: int):
+    def forward(self, H: int, W: int, device=None):
         # 根据实际序列长度判断是否需要重新计算
-        current_device = self.device if self.device is not None else torch.device('cpu')
+        # 优先使用传入的 device，其次使用 self.device
+        if device is None:
+            current_device = self.device if self.device is not None else torch.device('cpu')
+        else:
+            current_device = device
         seq_len = H * W
         
         # 缓存命中条件：长度相同 且 设备/dtype 匹配
@@ -201,7 +206,7 @@ class RopePositionEmbedding(nn.Module):
         
         # 需要重新计算
         self._seq_len_cached = seq_len
-        coords = self._get_grid_coords(H, W)
+        coords = self._get_grid_coords(H, W).to(current_device)  # 确保 coords 在正确设备上
         with torch.autocast(device_type="cuda", enabled=False):
             # t = coords.float() @ self.inv_freq.float().unsqueeze(-1)
             # freqs = torch.cat((t, t), dim=-1)
@@ -212,8 +217,8 @@ class RopePositionEmbedding(nn.Module):
                 t_coords[:, 0:1] * t_inv_freq,
                 t_coords[:, 1:2] * t_inv_freq
             ], dim=-1)
-            cos = freqs.cos().to(self.dtype)
-            sin = freqs.sin().to(self.dtype)
+            cos = freqs.cos().to(self.dtype).to(current_device)  # 确保在正确设备上
+            sin = freqs.sin().to(self.dtype).to(current_device)  # 确保在正确设备上
             self._cos_cached = cos.unsqueeze(0).unsqueeze(1)
             self._sin_cached = sin.unsqueeze(0).unsqueeze(1)
         return self._cos_cached, self._sin_cached
@@ -1005,8 +1010,10 @@ class DinoUniModel(nn.Module):
         self.conv_firstdT = nn.Conv2d(5, embed_dim, 3, 1, 1)
         # 3. Isotropic
         self.conv_firstiso = nn.Conv2d(1, embed_dim, 3, 1, 1)
-        # 4. Projection
-        self.project = ENLCN(args=args)
+        # 4. Projection (50通道输入，对应50个Z切片)
+        args_proj = copy.deepcopy(args)
+        args_proj.inch = 50  # 修改输入通道数为50
+        self.project = ENLCN(args=args_proj)
         self.conv_firstproj = nn.Conv2d(1, embed_dim, 3, 1, 1)
         # 5. Volumetric (2D to 3D)
         self.conv_first0 = UNetA(121, 61)
@@ -1023,13 +1030,17 @@ class DinoUniModel(nn.Module):
         self.patch_unembed = PatchUnEmbed(embed_dim=embed_dim)
         self.conv_after_body = nn.Conv2d(embed_dim, embed_dim, 3, 1, 1)
 
+        # --- 关键：恢复 patch 分辨率的上采样器 ---
+        self.decoder_feat_upsampler = Upsample(scale=vit_patch_size, num_feat=embed_dim)
+
         # --- 任务特定尾 (Tails) ---
         self.conv_before_upsample0 = nn.Sequential(nn.Conv2d(embed_dim, 32, 3, 1, 1), nn.LeakyReLU(inplace=True))
-        self.upsamplesr = Upsample(scale=2, num_feat=32) # Task 1
-        self.upsample_common = Upsample(scale=1, num_feat=32) # Task 2, 3
+        self.upsamplesr = Upsample(scale=2, num_feat=32) # Task 1: 2x 上采样
+        self.upsample_common = Upsample(scale=1, num_feat=32) # Task 2, 3: 无上采样
         self.conv_last0 = nn.Conv2d(32, 1, 3, 1, 1)
         
         # Task 5 特有尾部
+        self.decoder_feat_upsampler_v = Upsample(scale=vit_patch_size, num_feat=embed_dim)
         self.conv_before_upsamplev = nn.Sequential(nn.Conv2d(embed_dim, embed_dim, 3, 1, 1), nn.LeakyReLU(inplace=True))
         self.conv_lastv = nn.Conv2d(embed_dim, 61, 3, 1, 1)
 
@@ -1041,54 +1052,67 @@ class DinoUniModel(nn.Module):
             if m.bias is not None: nn.init.constant_(m.bias, 0)
 
     def forward_features(self, x):
-        B, C, H, W = x.shape
-        grid_h, grid_w = H // self.vit_patch_size, W // self.vit_patch_size
+        B, C, H_orig, W_orig = x.shape
+        grid_h, grid_w = H_orig // self.vit_patch_size, W_orig // self.vit_patch_size
         x = self.patch_embed(x)
-        cos, sin = self.rope_embed(grid_h, grid_w)
+        cos, sin = self.rope_embed(grid_h, grid_w, device=x.device)  # 传递输入的 device
         for blk in self.blocks:
             x = blk(x, cos, sin)
         x = self.norm(x)
         x = self.patch_unembed(x, (grid_h, grid_w))
-        return self.conv_after_body(x)
+        x = self.conv_after_body(x)
+        # 恢复到原始分辨率 H, W
+        x = self.decoder_feat_upsampler(x)
+        # 确保输出尺寸与输入一致（处理不能被 patch_size 整除的情况）
+        if x.shape[2] != H_orig or x.shape[3] != W_orig:
+            x = F.interpolate(x, size=(H_orig, W_orig), mode='bilinear', align_corners=False)
+        return x
 
     def forward(self, x, tsk=0):
         if tsk > 0: self.task = tsk
         self.mean = self.mean.type_as(x)
+        H_orig, W_orig = x.shape[2], x.shape[3]
         
         # --- Head 阶段 ---
         if self.task == 1: 
-            x = self.conv_firstsr((x - self.mean) * self.img_range)
+            x_first = self.conv_firstsr((x - self.mean) * self.img_range)
 
         elif self.task == 2: 
-            # 针对去噪任务的特殊处理：将输入归一化并调整通道
+            # 针对去噪任务：输入已经是 5 通道（滑动窗口）
             x_input = (x - self.mean) * self.img_range
-            # 如果输入是单通道（Planaria），将其复制为 5 通道以匹配 conv_firstdT 的权重形状
-            if x_input.shape[1] == 1:
-                x_input = x_input.repeat(1, 5, 1, 1)
-            x = self.conv_firstdT(x_input)
+            x_first = self.conv_firstdT(x_input)
             
         elif self.task == 3: 
-            x = self.conv_firstiso((x - self.mean) * self.img_range)
+            x_first = self.conv_firstiso((x - self.mean) * self.img_range)
         elif self.task == 4:
-            x2d, _ = self.project(x)
-            x = self.conv_firstproj((x2d - self.mean) * self.img_range)
+            proj_out = self.project(x)
+            # ENLCN 训练时返回 (x, loss)，测试时只返回 x
+            x2d = proj_out[0] if isinstance(proj_out, tuple) else proj_out
+            x_first = self.conv_firstproj((x2d - self.mean) * self.img_range)
         elif self.task == 5:
             xunet = self.conv_first0(x)
-            x = self.conv_firstv(xunet)
+            x_first = self.conv_firstv(xunet)
 
         # --- Body 阶段 ---
-        xfe = self.forward_features(x)
+        xfe = self.forward_features(x_first)  # 现在 xfe 已经恢复到原始 H, W
 
         # --- Tail 阶段 ---
         if self.task in [1, 2, 3]:
-            x = self.conv_before_upsample0(xfe + x)
-            x = self.upsamplesr(x) if self.task == 1 else self.upsample_common(x)
-            x = self.conv_last0(x)
+            x_out = self.conv_before_upsample0(xfe + x_first)  # 残差连接
+            x_out = self.upsamplesr(x_out) if self.task == 1 else self.upsample_common(x_out)
+            x_out = self.conv_last0(x_out)
+            return x_out / self.img_range + self.mean
         elif self.task == 4:
-            x = self.conv_last0(self.conv_before_upsample0(xfe))
-            return x2d, x / self.img_range + self.mean + x2d
+            x_out = self.conv_last0(self.conv_before_upsample0(xfe))
+            return x2d, x_out / self.img_range + self.mean + x2d
         elif self.task == 5:
-            x = self.conv_lastv(self.conv_before_upsamplev(xfe))
-            return xunet, x / self.img_range + self.mean
+            # 任务5: xunet 是 (H, W)，需要上采样到 (H*11, W*11)
+            # xfe 目前是 (H, W)，需要上采样到 (H*11, W*11)
+            x_out = self.conv_before_upsamplev(xfe)
+            x_out = F.interpolate(x_out, size=(H_orig * 11, W_orig * 11), mode='bilinear', align_corners=False)
+            x_out = self.conv_lastv(x_out)
+            # 对 xunet 也进行上采样以匹配 hr 尺寸
+            xunet_up = F.interpolate(xunet, size=(H_orig * 11, W_orig * 11), mode='bilinear', align_corners=False)
+            return xunet_up, x_out / self.img_range + self.mean
 
-        return x / self.img_range + self.mean
+        return x_out / self.img_range + self.mean

@@ -5,6 +5,7 @@ import utility
 from utility import savecolorim
 import loss
 import argparse
+import wandb
 from mydata import SR, FlouresceneVCD, Flouresceneproj, Flouresceneiso, Flourescenedenoise, \
     normalize, PercentileNormalizer
 from torch.utils.data import dataloader
@@ -31,6 +32,7 @@ def options():
     parser.add_argument('--cpu', action='store_true', default=not gpu, help='cpu only')
     parser.add_argument('--resume', type=int, default=0, help='-2:best;-1:latest; 0:pretrain; >0: resume')
     parser.add_argument('--pre_train', type=str, default=pretrain, help='pre-trained model directory')
+    parser.add_argument('--modelpath', type=str, default='.', help='base path to load model checkpoints')
     
     # Data specifications
     parser.add_argument('--epochs', type=int, default=2000, help='number of epochs to train')
@@ -184,11 +186,23 @@ class PreTrainer():
                 psm, ssmm = utility.compute_psnr_and_ssim(sr2dim, hr2dim)
                 print('training patch- PSNR/SSIM = %f/%f' % (psm, ssmm))
                 
+                # wandb 日志记录
+                wandb.log({
+                    'epoch': epoch,
+                    'batch': batch,
+                    'task': self.tsk,
+                    'loss': loss.item(),
+                    'train_psnr': psm,
+                    'train_ssim': ssmm,
+                    'lr': self.optimizer.get_lr()
+                })
+                
                 if self.tsk == 4 or self.tsk == 5:
                     sr2dimu = np.float32(
                         normalize(np.squeeze(sr_stg1[0].cpu().detach().numpy()), 0, 100, clip=True)) * 255
                     psm, ssmm = utility.compute_psnr_and_ssim(sr2dimu, hr2dim)
                     print('sr_stg1 training patch = %f/%f' % (psm, ssmm))
+                    wandb.log({'stg1_psnr': psm, 'stg1_ssim': ssmm})
                 
                 print('Batch%d/Epoch%d, Loss = ' % (batch, epoch), loss)
                 print('[{}/{}]\t{}\t{:.1f}+{:.1f}s'.format((batch + 1) * self.args.batch_size,
@@ -216,6 +230,14 @@ class PreTrainer():
                 
                 self.pslst.append(psnr)
                 self.sslst.append(ssim)
+                
+                # wandb 记录验证指标
+                wandb.log({
+                    'val_psnr': psnr,
+                    'val_ssim': ssim,
+                    'best_psnr': self.bestpsnr,
+                    'best_epoch': self.bestep
+                })
                 
                 self.model.train()
                 self.loss.step()
@@ -271,7 +293,7 @@ class PreTrainer():
                 break
             num += 1
             lr, hr = self.prepare(lr, hr)  # torch.tensor(random).float().
-            sr = self.model(lr, 0)
+            sr = self.model(lr, 1)  # Task 1: SR
             sr = utility.quantize(sr, self.args.rgb_range)
             hr = utility.quantize(hr, self.args.rgb_range)
             
@@ -544,7 +566,7 @@ class PreTrainer():
                 
                 x_rot1 = torch.from_numpy(np.ascontiguousarray(x_rot1)).float()
                 x_rot1 = self.prepare(x_rot1)[0]
-                a1 = self.model(x_rot1, 0)
+                a1 = self.model(x_rot1, 3)  # Task 3: Isotropic
                 
                 a1 = np.expand_dims(np.squeeze(a1.cpu().detach().numpy()), -1)
                 u1 = _rotate(a1, -1, axis=1, copy=False)
@@ -964,6 +986,15 @@ if __name__ == '__main__':
     
     args = options()
     torch.manual_seed(args.seed)
+    
+    # 初始化 wandb
+    wandb.init(
+        project="UniFMIR-Pretrain",
+        name=f"Uni-DINOv3-{args.save}",
+        config=vars(args),
+        resume="allow"
+    )
+    
     checkpoint = utility.checkpoint(args)
     assert checkpoint.ok
     # unimodel = model.UniModel(args, tsk=-1)
@@ -974,11 +1005,24 @@ if __name__ == '__main__':
 
     # 2. 【关键步骤】加载预加载的 DINO 权重
     # 这样主干网络就不是随机初始化的，而是有 ImageNet 知识的
-    preloaded_path = './dinoir_v3_vitb_preloaded.pth' 
+    # preloaded_path = './dinoir_v3_vitb_preloaded.pth' 
+    preloaded_path = './dinoir_v3_vitb_unipreload.pth'  # 确保与 load_pretrain.py 的输出一致
     if os.path.exists(preloaded_path):
         print(f"Loading preloaded DINO weights from {preloaded_path}")
         state_dict = torch.load(preloaded_path)
-        unimodel.load_state_dict(state_dict, strict=False) # strict=False 因为头尾权重是空的
+        # 过滤掉形状不匹配的 key（如 project.head 因输入通道数变化）
+        model_state = unimodel.state_dict()
+        filtered_state_dict = {}
+        for k, v in state_dict.items():
+            if k in model_state:
+                if v.shape == model_state[k].shape:
+                    filtered_state_dict[k] = v
+                else:
+                    print(f"Skipping '{k}' due to shape mismatch: checkpoint {v.shape} vs model {model_state[k].shape}")
+            else:
+                print(f"Skipping '{k}' as it's not in the model")
+        unimodel.load_state_dict(filtered_state_dict, strict=False)
+        print(f"Loaded {len(filtered_state_dict)}/{len(state_dict)} keys from checkpoint")
     else:
         print("Warning: Preloaded weights not found, starting from scratch!")
     

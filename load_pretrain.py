@@ -21,13 +21,16 @@ if not os.path.exists(dino_checkpoint_path):
     sys.exit(1)
 
 
-# 3. 创建一个模拟的 'args' 对象
-# 这样 DinoUniModel 在初始化投影头 (ENLCN) 时，就能找到 n_resblocks 等参数，不会报错
+# 修改 load_pretrain.py 中的步骤 3
 mock_args = argparse.Namespace()
-mock_args.n_resblocks = 8  # 这是 UniFMIR 的默认参数
-mock_args.n_feats = 32     # 这是 UniFMIR 的默认参数
-mock_args.scale = [1]      # 缩放倍率默认设为 1
-mock_args.inch = 1      # ← 加上这一行，解决 'inch' 缺失的问题
+mock_args.n_resblocks = 8      # UniFMIR 默认参数
+mock_args.n_feats = 32         # UniFMIR 默认参数
+mock_args.scale = [1]          # 缩放倍率
+mock_args.inch = 1             # 输入通道
+mock_args.n_colors = 1         # 输出通道 (对应 outch)
+mock_args.rgb_range = 1        # 图像数值范围 (对应 MeanShift)
+mock_args.res_scale = 1.0      # 残差缩放比例
+mock_args.dilation = False     # 对应 enlcn.py 中的 make_model 判断
 
 print("正在实例化 DinoUniModel (ViT-B 尺寸) 模型...")
 
