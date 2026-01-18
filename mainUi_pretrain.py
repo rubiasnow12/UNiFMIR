@@ -557,7 +557,9 @@ class PreTrainer():
             
             print('filename = ', filename, 'hr.shape, lr.shape = ', hr.shape, lr.shape)  # [301, 752, 752, 2]
             
-            batchstep = 100
+            # 减小 batchstep 以避免 CUDA OOM
+            batchstep = 30  # 原来是 100，减小以节省显存
+            torch.cuda.empty_cache()  # 清理显存缓存
             for wp in range(0, hr.shape[2], batchstep):
                 if wp + batchstep >= hr.shape[2]:
                     wp = hr.shape[2] - batchstep
@@ -571,6 +573,8 @@ class PreTrainer():
                 a1 = np.expand_dims(np.squeeze(a1.cpu().detach().numpy()), -1)
                 u1 = _rotate(a1, -1, axis=1, copy=False)
                 isoim1[:, :, wp:wp + batchstep, :] = u1
+                del x_rot1, a1  # 释放中间变量
+                torch.cuda.empty_cache()  # 每次循环后清理显存
             for hp in range(0, hr.shape[1], batchstep):
                 if hp + batchstep >= hr.shape[1]:
                     hp = hr.shape[1] - batchstep
@@ -584,6 +588,8 @@ class PreTrainer():
                 a2 = np.expand_dims(np.squeeze(a2.cpu().detach().numpy()), -1)
                 u2 = _rotate(_rotate(a2, -1, axis=0, copy=False), -1, axis=2, copy=False)
                 isoim2[:, hp:hp + batchstep, :, :] = u2
+                del x_rot2, a2  # 释放中间变量
+                torch.cuda.empty_cache()  # 每次循环后清理显存
             
             sr = np.sqrt(np.maximum(isoim1, 0) * np.maximum(isoim2, 0))
             print('sr.shape = ', sr.shape)
