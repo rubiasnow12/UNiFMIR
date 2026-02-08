@@ -6,10 +6,10 @@ from model.enlcn import ENLCN
 class UniversalDino(nn.Module):
     def __init__(self, args, 
                  img_size=64, 
-                 embed_dim=768,          # DINOv3 ViT-B
+                 embed_dim=384,          # ViT-S (原 ViT-B 为 768)
                  patch_size=8,           # ViT Patch Size
-                 dino_num_heads=12,      # DINOv3 ViT-B
-                 dino_depth=12,          # DINOv3 ViT-B
+                 dino_num_heads=6,       # ViT-S (原 ViT-B 为 12)
+                 dino_depth=12,          # ViT-S/B 都是 12 层
                  # ... 其他参数保持默认 ...
                  ):
         super(UniversalDino, self).__init__()

@@ -1,6 +1,33 @@
 import sys
 sys.path.append('../')
-from csbdeep.func_mcx import savecolorim
+# from csbdeep.func_mcx import savecolorim  # 避免导入 TensorFlow
+
+# ============ 本地实现 savecolorim（避免 TensorFlow 依赖）============
+import matplotlib.pyplot as plt
+
+def to_color(x):
+    """简化版 to_color"""
+    if x.ndim == 2:
+        return x
+    return x
+
+def savecolorim(save, im, norm=True, **imshow_kwargs):
+    """保存彩色图像"""
+    imshow_kwargs['cmap'] = 'magma'
+    if not norm:
+        imshow_kwargs['vmin'] = 0
+        imshow_kwargs['vmax'] = 255
+    
+    im = np.asarray(im)
+    im = np.stack([to_color(i) for i in im]) if 1 < im.shape[-1] <= 3 else im
+    ndim_allowed = 2 + int(1 <= im.shape[-1] <= 3)
+    proj_axis = tuple(range(1, 1 + max(0, im[0].ndim - ndim_allowed)))
+    im = np.max(im, axis=proj_axis)
+    
+    if save is not None:
+        plt.imsave(save, im, **imshow_kwargs)
+# ================================================================
+
 try:
     from skimage.metrics import structural_similarity as compare_ssim
     from skimage.metrics import peak_signal_noise_ratio as compare_psnr
@@ -173,8 +200,18 @@ def compute_psnr_and_ssim(image1, image2, border_size=0):
         image2 = image2[border_size:-border_size, border_size:-border_size, :]
     
     psnr = compare_psnr(image1, image2, data_range=255)
-    ssim = compare_ssim(image1, image2, win_size=11, gaussian_weights=True, multichannel=True, K1=0.01, K2=0.03,
-                        sigma=1.5, data_range=255)
+    # ssim = compare_ssim(image1, image2, win_size=11, gaussian_weights=True, multichannel=True, K1=0.01, K2=0.03,
+    #                     sigma=1.5, data_range=255)
+     # 动态调整 win_size，确保不超过图像尺寸（必须为奇数）
+    min_side = min(image1.shape[0], image1.shape[1])
+    win_size = min(11, min_side)
+    if win_size % 2 == 0:
+        win_size -= 1
+    win_size = max(3, win_size)  # 最小为 3
+    
+    # 使用 channel_axis 替代已废弃的 multichannel 参数
+    ssim = compare_ssim(image1, image2, win_size=win_size, gaussian_weights=True, 
+                        channel_axis=2, K1=0.01, K2=0.03, sigma=1.5, data_range=255)
     
     return psnr, ssim
 

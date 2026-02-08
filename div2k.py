@@ -7,8 +7,61 @@ import os
 import numpy as np
 from tifffile import imread
 sys.path.append('..')
-from csbdeep.utils import normalize, axes_dict, axes_check_and_normalize, backend_channels_last, move_channel_for_backend
-from csbdeep.io import load_training_data
+# from csbdeep.utils import normalize, axes_dict, axes_check_and_normalize, backend_channels_last, move_channel_for_backend
+# from csbdeep.io import load_training_data
+
+
+# ============ 简化版数据加载函数（避免导入 TensorFlow）============
+def normalize(x, pmin=2, pmax=99.8, axis=None, clip=False, eps=1e-20, dtype=np.float32):
+    """百分位归一化"""
+    mi = np.percentile(x, pmin, axis=axis, keepdims=True)
+    ma = np.percentile(x, pmax, axis=axis, keepdims=True)
+    result = (x - mi) / (ma - mi + eps)
+    if clip:
+        result = np.clip(result, 0, 1)
+    return result.astype(dtype)
+
+def load_training_data(file, validation_split=0.05, axes='SCYX', verbose=True):
+    """从 npz 文件加载训练数据（简化版，不依赖 TensorFlow）"""
+    data = np.load(file)
+    X, Y = data['X'], data['Y']
+    
+    n_images = X.shape[0]
+    assert X.shape[0] == Y.shape[0]
+    
+    # 通道移动到最后（PyTorch 风格：NCHW -> NHWC for 兼容性，后面会再转）
+    # 假设输入是 SCYX (Sample, Channel, Y, X)，保持不变
+    
+    if validation_split > 0:
+        n_val = int(round(n_images * validation_split))
+        n_train = n_images - n_val
+        X_t, Y_t = X[-n_val:], Y[-n_val:]
+        X, Y = X[:n_train], Y[:n_train]
+    else:
+        X_t, Y_t = None, None
+    
+    # 如果是 SCYX，转换为 SYXC (通道最后)
+    if len(X.shape) == 4:
+        X = np.moveaxis(X, 1, -1)  # SCYX -> SYXC
+        Y = np.moveaxis(Y, 1, -1)
+        if X_t is not None:
+            X_t = np.moveaxis(X_t, 1, -1)
+            Y_t = np.moveaxis(Y_t, 1, -1)
+        axes_out = 'SYXC'
+    else:
+        axes_out = axes
+    
+    if verbose:
+        print('number of training images:\t', len(X))
+        print('number of validation images:\t', len(X_t) if X_t is not None else 0)
+        print('image size:\t\t\t', X.shape[1:])
+        print('axes:\t\t\t\t', axes_out)
+    
+    data_val = (X_t, Y_t) if validation_split > 0 else None
+    return (X, Y), data_val, axes_out
+# ===========================================================
+
+
 
 CSB_path = './CSB'
 VCD_path = './VCD'

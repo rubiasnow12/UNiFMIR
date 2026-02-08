@@ -1,3 +1,4 @@
+from regex import T
 import torch
 import utility
 import loss
@@ -32,6 +33,14 @@ def options():
     parser.add_argument('--datamin', type=int, default=0)
     parser.add_argument('--datamax', type=int, default=100)
     # parser.add_argument('--condition', type=int, default=condition)
+    
+    # ========== LoRA 微调参数 (已禁用，改为全参微调) ==========
+    # parser.add_argument('--use_lora', type=bool, default=use_lora, help='是否启用 LoRA 微调')
+    # parser.add_argument('--lora_r', type=int, default=16, help='LoRA 秩 (rank)')
+    # parser.add_argument('--lora_alpha', type=int, default=32, help='LoRA alpha 缩放系数')
+    # parser.add_argument('--lora_dropout', type=float, default=0.05, help='LoRA dropout')
+    parser.add_argument('--use_lora', type=bool, default=False, help='是否启用 LoRA 微调 (全参微调时设为 False)')
+    # ===================================
     
     parser.add_argument('--cpu', action='store_true', default=iscpu, help='')
     parser.add_argument('--print_every', type=int, default=print_every,
@@ -106,6 +115,8 @@ def options():
     parser.add_argument('--loss', type=str, default='1*L1+1*L2', help='loss function configuration')
     parser.add_argument('--skip_threshold', type=float, default='1e8',
                         help='skipping batch that has large error')
+    parser.add_argument('--patience', type=int, default=200,
+                        help='early stopping patience (epochs without improvement)')
     
     args = parser.parse_args()
     
@@ -162,12 +173,13 @@ if __name__ == '__main__':
     # modelname = 'MultiDINOv3'
     # testsetlst = ['F-actin','CCPs','ER','Microtubules'] 
     testsetlst = ['ER']
-    test_only = True
+    test_only = True  # 设置为 True 以仅进行测试
     # modelpaths = [  './experiment/DINOIRv3F-actin-frozen/model/model_106.pt',
     #                 './experiment/DINOIRv3CCPs-frozen/model/model_80.pt',
-    #                 './experiment/DINOIRv3ER-frozen/model/model_171.pt',
+    #                 './experiment/DINOIRv3ER-frozen/model/model_171.pt',156
     #                 './experiment/DINOIRv3Microtubules-frozen/model/model_78.pt']
-    modelpaths = './experiment/DINOIRv3ER-frozen/model/model_159.pt',
+    modelpaths = './experiment/DINOIRv3ER-frozen/model/model_91.pt',
+    # modelpaths = './dinoir_v3_vitb_sr_preload.pth',
     normrange = 'Norm_0-100'  #
     
     scale = 2
@@ -180,6 +192,13 @@ if __name__ == '__main__':
     iscpu = False
     print_every = 1000
     test_every = 2000
+    
+    # ========== 全参微调配置 (ViT-S) ==========
+    # 原 LoRA 配置已禁用，改为全参微调
+    use_lora = False  # 设为 False 使用 ViT-S 全参数微调
+    # use_lora = True  # 设为 True 启用 LoRA 高效微调，False 使用全参数微调
+    # 注意：test_only=True 时也可以加载带 LoRA 的模型进行测试
+    # ==================================
 
 # 指定 DINOv3 预加载或微调后的权重文件路径
     # dino_checkpoint_path = 'experiment/MultiDINOOv3CCPs-multi/model/model_best.pt'

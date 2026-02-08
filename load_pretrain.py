@@ -4,21 +4,28 @@ import sys
 import os
 
 # 1. 导入我们修改后的模型
-print("正在导入 'make_model' 从 'model.dinoir_v3'...")
+print("正在导入模型...")
 try:
-    from model.dinoir_v3 import DinoUniModel  # 直接导入类以便更灵活地创建
+    from model.dinoir_v3 import dinov3  # 导入 dinov3 类（用于 SR 任务）
+    from model.dinoir_v3 import DinoUniModel  # 导入通用模型类
     print("...导入成功！")
 except Exception as e:
     print(f"导入失败: {e}")
     sys.exit(1)
 
-# 2. 定义 DINOv3 ViT-B 权重文件的路径
-dino_checkpoint_path = 'dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth' 
-output_checkpoint_path = 'dinoir_v3_vitb_unipreload.pth'  # ← 输出文件名（通用权重）
+# 2. 定义 DINOv3 ViT-S 权重文件的路径
+dino_checkpoint_path = 'dinov3_vits16_pretrain_lvd1689m-08c60483.pth' 
 
-if not os.path.exists(dino_checkpoint_path):
-    print(f"错误: 未找到 DINOv3 权重文件 '{dino_checkpoint_path}'")
-    sys.exit(1)
+# ========== 选择要创建的模型类型 ==========
+# 如果你想用于 SR 任务（单一任务），使用 dinov3
+# 如果你想用于多任务（SR/Denoise/Iso 等），使用 DinoUniModel
+USE_UNIVERSAL_MODEL = False  # False = dinov3（SR专用），True = DinoUniModel（多任务）
+
+# 根据模型类型设置输出文件名
+if USE_UNIVERSAL_MODEL:
+    output_checkpoint_path = 'dinoir_v3_vits_uni_preload.pth'  # 多任务版本 (ViT-S)
+else:
+    output_checkpoint_path = 'dinoir_v3_vits_sr_preload.pth'   # SR 专用版本 (ViT-S)
 
 
 # 修改 load_pretrain.py 中的步骤 3
@@ -32,15 +39,27 @@ mock_args.rgb_range = 1        # 图像数值范围 (对应 MeanShift)
 mock_args.res_scale = 1.0      # 残差缩放比例
 mock_args.dilation = False     # 对应 enlcn.py 中的 make_model 判断
 
-print("正在实例化 DinoUniModel (ViT-B 尺寸) 模型...")
-
-# 实例化模型，关键点是把 args=None 改成 args=mock_args
-model = DinoUniModel(
-    args=mock_args,      # ← 修改这里，传入模拟的参数对象
-    embed_dim=768,       # ViT-B 的维度
-    dino_depth=12,       # ViT-B 的深度
-    dino_num_heads=12,   # ViT-B 的头数
-)
+if USE_UNIVERSAL_MODEL:
+    print("正在实例化 DinoUniModel (ViT-S 尺寸) 模型...")
+    # 实例化模型，关键点是把 args=None 改成 args=mock_args
+    model = DinoUniModel(
+        args=mock_args,      # ← 修改这里，传入模拟的参数对象
+        embed_dim=384,       # ViT-S 的维度
+        dino_depth=12,       # ViT-S 的深度
+        dino_num_heads=6,    # ViT-S 的头数
+    )
+else:
+    print("正在实例化 dinov3 (ViT-S 尺寸) 模型 (use_lora=False，便于加载原始权重)...")
+    # 关键：use_lora=False，先不注入 LoRA，等加载完权重后再注入
+    model = dinov3(
+        in_chans=1, 
+        out_chans=1,
+        embed_dim=384,       # ViT-S 的维度
+        dino_depth=12,       # ViT-S 的深度
+        dino_num_heads=6,    # ViT-S 的头数
+        upscale=2,
+        use_lora=False,  # ← 重要：先不启用 LoRA
+    )
 
 model_state_dict = model.state_dict()
 print("...模型实例化成功。")
@@ -96,12 +115,12 @@ print("\n" + "="*60)
 print("✅ 全部完成!")
 print("="*60)
 print(f"\n📁 生成的权重文件: '{output_checkpoint_path}'")
-print("\n📝 使用说明:")
-print("   这个权重文件包含了 DINOv3 预训练的 backbone (blocks + norm)，")
-print("   以及随机初始化的 head/tail 层 (patch_embed, upsample 等)。")
-print("\n   您可以将此文件用于以下任务的微调:")
-print("   - SR (超分辨率): scale=2, 使用 finetune_dinoir_v3_sr.py")
-print("   - Denoise (去噪): scale=1, 需要创建 finetune_dinoir_v3_denoise.py")
-print("   - Projection: 使用 dinoProj_stage2")
-print("   - 2D to 3D: 使用 dinov3_2dto3d")
-print("\n   注意: head/tail 层的权重会在首次微调时根据具体任务自动调整。")
+print("\n📝 ViT-S 全参微调流程:")
+print("   1. 在 mainSR_dino.py 中设置:")
+print("      - test_only = False")
+print("      - use_lora = False  (已禁用 LoRA，使用全参微调)")
+print("      - resume = 0")
+print(f"      - modelpaths = './{output_checkpoint_path}',")
+print("   2. 运行 python mainSR_dino.py")
+print("   3. 系统会自动: 加载权重 → 全参数训练 (冻结位置编码)")
+print("\n   注意: ViT-S 比 ViT-B 参数量更小，全参微调更加高效！")

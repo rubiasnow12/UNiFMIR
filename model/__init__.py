@@ -28,6 +28,12 @@ class Model(nn.Module):
         if unimodel is not None:
             print('********** Using pre-initialized Universal DINO model ***********')
             self.model = unimodel.to(self.device)
+            # 检查外部是否已经注入了 LoRA（通过检查 blocks 的 qkv 层）
+            self._lora_already_injected = False
+            if hasattr(self.model, 'blocks') and len(self.model.blocks) > 0:
+                first_qkv = getattr(self.model.blocks[0].attn, 'qkv', None)
+                if first_qkv is not None and hasattr(first_qkv, 'original_linear'):
+                    self._lora_already_injected = True
         elif 'proj' in args.model:
             print('********** %s ***********' % args.model.lower())
             self.model = module.make_modelproj(args).to(self.device)
@@ -37,6 +43,9 @@ class Model(nn.Module):
         elif 'DINOIRv3' in args.model:  # 添加这个分支
             print('********** %s ***********' % args.model.lower())
             self.model = dinoir_v3.make_model(args).to(self.device)
+            # 标记：需要在加载权重后注入 LoRA
+            self._should_inject_lora = getattr(self.model, '_should_inject_lora', False)
+            self._lora_enabled = False  # 此时还未注入
         elif 'MultiDINOv3' in args.model:  # 多尺度 DINOv3 分支
             print('********** %s ***********' % args.model.lower())
             self.model = multi_dinoir_v3.make_model(args).to(self.device)
@@ -47,15 +56,28 @@ class Model(nn.Module):
         else:
             print('********** %s ***********' % args.model.lower())
             self.model = module.make_model(args).to(self.device)
-
-        # === 全参数微调 (Full Fine-tuning) ===
-        # 联合预训练阶段：所有参数可训练，学习显微镜通用表征
-        for param in self.model.parameters():
-            param.requires_grad = True
         
-        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in self.model.parameters())
-        print(f"--- 全参数微调: 可训练 {trainable_params/1e6:.2f}M / 总参数 {total_params/1e6:.2f}M ({trainable_params/total_params:.1%}) ---")
+        # ========== 参数训练设置（LoRA 注入前的临时设置） ==========
+        # 注意：如果启用 LoRA，真正的冻结会在 load() 之后的 inject_lora() 中完成
+        self._should_inject_lora = getattr(self, '_should_inject_lora', False)
+        
+        # 检查是否外部已经注入了 LoRA（如 mainUi_pretrain.py 中预先注入的情况）
+        if getattr(self, '_lora_already_injected', False):
+            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in self.model.parameters())
+            print(f"--- [LoRA 已注入] 可训练 {trainable_params/1e6:.2f}M / 总参数 {total_params/1e6:.2f}M ({trainable_params/total_params:.1%}) ---")
+        elif not self._should_inject_lora:
+            # 全参数微调模式：所有参数可训练
+            for param in self.model.parameters():
+                param.requires_grad = True
+            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in self.model.parameters())
+            print(f"--- [全参数微调] 可训练 {trainable_params/1e6:.2f}M / 总参数 {total_params/1e6:.2f}M ({trainable_params/total_params:.1%}) ---")
+        else:
+            # LoRA 模式：先让所有参数可训练，等 load() 后 inject_lora() 再冻结主干
+            for param in self.model.parameters():
+                param.requires_grad = True
+            print("--- [LoRA 模式] 权重加载后将注入 LoRA 并冻结主干 ---")
 
         # if getattr(args, 'freeze_backbone', False):
         #     print("--- 策略调整: 启用部分微调 (Partial Fine-tuning) ---")
@@ -119,6 +141,19 @@ class Model(nn.Module):
             self.model.half()
 
         self.load(os.path.join('experiment', args.save), modelpath=args.modelpath, resume=args.resume)
+        
+        # ========== 关键：在加载权重后注入 LoRA（仅当未在 load() 中提前注入时） ==========
+        if getattr(self, '_should_inject_lora', False) and hasattr(self.model, 'inject_lora'):
+            # 检查是否已经在 load() 中注入过（针对包含 LoRA 权重的 checkpoint）
+            if not getattr(self.model, '_lora_injected', False):
+                print("\n--- [LoRA] 权重加载完成，正在注入 LoRA... ---")
+                self.model.inject_lora()
+                self._lora_enabled = True
+            
+            # 重新统计可训练参数
+            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in self.model.parameters())
+            print(f"--- [LoRA] 注入后参数统计: 可训练 {trainable_params/1e6:.2f}M / 总参数 {total_params/1e6:.2f}M ({trainable_params/total_params:.1%}) ---\n")
 
         if not args.cpu and args.n_GPUs > 1:
             self.model = nn.DataParallel(self.model, range(args.n_GPUs))
@@ -195,6 +230,23 @@ class Model(nn.Module):
             #     self.get_model().load_state_dict(torch.load(modelpath, **kwargs), strict=True)
             print('Loading pretrained model from {}'.format(modelpath))
             pretrained_dict = torch.load(modelpath, **kwargs)
+            
+            # ========== 检测 checkpoint 是否包含 LoRA 权重 ==========
+            # 如果 checkpoint 包含 'original_linear' 或 'lora_A/lora_B'，说明保存时已注入 LoRA
+            has_lora_in_checkpoint = any(
+                'original_linear' in k or 'lora_A' in k or 'lora_B' in k 
+                for k in pretrained_dict.keys()
+            )
+            
+            if has_lora_in_checkpoint and getattr(self, '_should_inject_lora', False):
+                # checkpoint 包含 LoRA 权重，需要先注入 LoRA 结构再加载
+                print(">>> [检测到] Checkpoint 包含 LoRA 权重，先注入 LoRA 结构...")
+                if hasattr(self.model, 'inject_lora') and not getattr(self.model, '_lora_injected', False):
+                    self.model.inject_lora()
+                    self._lora_enabled = True
+                    # 标记已注入，避免后续重复注入
+                    self._should_inject_lora = False
+            
             model_dict = self.model.state_dict()
 
             # 通用处理：形状匹配才加载；对 conv_first.weight 做特殊适配

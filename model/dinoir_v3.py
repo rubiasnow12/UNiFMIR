@@ -223,6 +223,55 @@ class RopePositionEmbedding(nn.Module):
             self._sin_cached = sin.unsqueeze(0).unsqueeze(1)
         return self._cos_cached, self._sin_cached
 
+
+# ============== 原生 LoRA 实现（不依赖 peft 库） ==============
+class LoRALinear(nn.Module):
+    """
+    LoRA (Low-Rank Adaptation) 线性层
+    将原始线性层分解为: W + BA，其中 B 和 A 是低秩矩阵
+    """
+    def __init__(self, original_linear: nn.Linear, r: int = 16, alpha: int = 32, dropout: float = 0.05):
+        super().__init__()
+        self.original_linear = original_linear
+        self.r = r
+        self.alpha = alpha
+        self.scaling = alpha / r
+        
+        in_features = original_linear.in_features
+        out_features = original_linear.out_features
+        
+        # 获取原始层所在的设备和数据类型
+        device = original_linear.weight.device
+        dtype = original_linear.weight.dtype
+        
+        # LoRA 低秩矩阵（确保在同一设备上）
+        self.lora_A = nn.Linear(in_features, r, bias=False, device=device, dtype=dtype)
+        self.lora_B = nn.Linear(r, out_features, bias=False, device=device, dtype=dtype)
+        self.lora_dropout = nn.Dropout(dropout)
+        
+        # 初始化：A 用 kaiming，B 用零初始化（确保初始时 LoRA 输出为 0）
+        nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_B.weight)
+        
+        # 冻结原始权重
+        self.original_linear.weight.requires_grad = False
+        if self.original_linear.bias is not None:
+            self.original_linear.bias.requires_grad = False
+    
+    def forward(self, x):
+        # 原始输出 + LoRA 输出
+        original_out = self.original_linear(x)
+        lora_out = self.lora_B(self.lora_A(self.lora_dropout(x))) * self.scaling
+        return original_out + lora_out
+    
+    def merge_weights(self):
+        """合并 LoRA 权重到原始线性层（用于推理加速）"""
+        with torch.no_grad():
+            self.original_linear.weight.data += (self.lora_B.weight @ self.lora_A.weight) * self.scaling
+        return self.original_linear
+# ============================================================
+
+
 # --- 来自 dinov3/layers/attention.py (DINOv3 使用的 Attention) ---
 class Attention(nn.Module):
     def __init__(self, dim, num_heads=8, qkv_bias=False, proj_bias=True, attn_drop=0.0, proj_drop=0.0):
@@ -337,7 +386,47 @@ dtype_dict = {
 #     return dinov3(upscale=int(args.scale[0]), in_chans=inch)
 
 def make_model(args):
-    return DinoUniModel(args)
+    """
+    创建 DINOv3 模型。
+    
+    ViT-S 全参微调模式：模型创建时 use_lora=False，所有参数可训练。
+    
+    # ========== LoRA 配置已禁用，改为全参微调 ==========
+    # 重要：模型创建时 use_lora=False，这样可以先加载预训练权重。
+    # LoRA 注入应该在 model/__init__.py 中加载权重之后进行。
+    # 
+    # LoRA 相关参数保存在模型中，供后续 inject_lora() 使用:
+    # - args.use_lora: 是否启用 LoRA (保存到模型，加载权重后再注入)
+    # - args.lora_r: LoRA 秩 (默认 16)
+    # - args.lora_alpha: LoRA alpha (默认 32)
+    # - args.lora_dropout: LoRA dropout (默认 0.05)
+    # ===================================================
+    """
+    # LoRA 配置已禁用，保留参数但不使用
+    # lora_r = getattr(args, 'lora_r', 16)
+    # lora_alpha = getattr(args, 'lora_alpha', 32)
+    # lora_dropout = getattr(args, 'lora_dropout', 0.05)
+    
+    try:
+        inch = int(args.inputchannel) if hasattr(args, 'inputchannel') else args.inch
+    except:
+        inch = 1
+    
+    # ViT-S 全参微调：创建时 use_lora=False
+    model = dinov3(
+        upscale=int(args.scale[0]), 
+        in_chans=inch,
+        out_chans=getattr(args, 'n_colors', 1),
+        use_lora=False,  # 全参微调模式，不使用 LoRA
+        lora_r=16,       # 保留默认值但不使用
+        lora_alpha=32,
+        lora_dropout=0.05
+    )
+    
+    # LoRA 注入标志已禁用，始终设为 False
+    # model._should_inject_lora = getattr(args, 'use_lora', True)
+    model._should_inject_lora = False  # 全参微调模式
+    return model
 
 
 def make_modelproj(args):
@@ -352,24 +441,34 @@ def make_model2t3(args):
 
 class dinov3(nn.Module):
     def __init__(self, img_size=64, patch_size=1, in_chans=3, out_chans=1,
-                 embed_dim=768, 
+                 embed_dim=384,      # ViT-S 的维度 (原 ViT-B 为 768)
                  depths=[2, 2, 6, 2],
-                 num_heads=[6, 6, 6, 6],
+                 num_heads=[6, 6, 6, 6],  # ViT-S 的头数 (原 ViT-B 为 12)
                  vit_patch_size=8,
                  window_size=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, # qk_scale 也不再使用
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True, # ape 也不再使用
                  use_checkpoint=False, upscale=2, img_range=1., num_feat=32,
                  # === 添加 DINOv3 参数 ===
-                 dino_depth=12, dino_num_heads=12, dino_ffn_ratio=4.0,
+                 dino_depth=12, dino_num_heads=6, dino_ffn_ratio=4.0,  # ViT-S 的头数
                  layerscale_init=1e-4, dino_norm_layer='layernorm', 
                  dino_ffn_layer='mlp', pos_embed_rope_base=100.0,
-                 dino_rope_dtype='bf16'
+                 dino_rope_dtype='bf16',
                  # =======================
+                 # === LoRA 微调参数 ===
+                 use_lora=False,  # 是否启用 LoRA，load_pretrain.py 设为 False
+                 lora_r=16,       # LoRA 秩
+                 lora_alpha=32,   # LoRA alpha
+                 lora_dropout=0.05
+                 # ====================
                  ):
         super(dinov3, self).__init__()
         num_in_ch = in_chans
         num_out_ch = out_chans
+        
+        # LoRA 相关状态
+        self._lora_config = {'r': lora_r, 'alpha': lora_alpha, 'dropout': lora_dropout}
+        self._lora_injected = False
         
         self.precision = torch.float32
         self.img_range = img_range
@@ -474,6 +573,94 @@ class dinov3(nn.Module):
 
         self.conv_last = nn.Conv2d(num_feat, num_out_ch, 3, 1, 1)
         self.apply(self._init_weights)
+        
+        # 保存 LoRA 配置参数，供 inject_lora() 方法使用
+        self._lora_config = {
+            'r': lora_r,
+            'alpha': lora_alpha,
+            'dropout': lora_dropout
+        }
+        self._lora_injected = False
+
+        # 如果启用 LoRA，在初始化时注入
+        if use_lora:
+            self.inject_lora()
+    
+    def inject_lora(self, r=None, alpha=None, dropout=None):
+        """
+        注入 LoRA 到 DINOv3 主干。可以在加载预训练权重后单独调用。
+        使用原生实现，不依赖 peft 库。
+        
+        Args:
+            r: LoRA 秩，默认使用初始化时的配置
+            alpha: LoRA alpha，默认使用初始化时的配置  
+            dropout: LoRA dropout，默认使用初始化时的配置
+        """
+        if self._lora_injected:
+            print(">>> [跳过] LoRA 已经注入，无需重复操作")
+            return
+        
+        # 使用传入参数或默认配置
+        r = r or self._lora_config['r']
+        alpha = alpha or self._lora_config['alpha']
+        dropout = dropout or self._lora_config['dropout']
+        
+        # 1. 冻结 DINOv3 所有的主干参数（包括 blocks, rope_embed, patch_embed, norm 等）
+        for param in self.blocks.parameters():
+            param.requires_grad = False
+        if hasattr(self, 'rope_embed'):
+            for param in self.rope_embed.parameters():
+                param.requires_grad = False
+        # if hasattr(self, 'patch_embed'):
+        #     for param in self.patch_embed.parameters():
+        #         param.requires_grad = False
+        # if hasattr(self, 'patch_unembed'):
+        #     for param in self.patch_unembed.parameters():
+        #         param.requires_grad = False
+        # if hasattr(self, 'norm'):
+        #     for param in self.norm.parameters():
+        #         param.requires_grad = False
+        # if hasattr(self, 'pos_drop'):
+        #     for param in self.pos_drop.parameters():
+        #         param.requires_grad = False
+        
+        # 2. 注入 LoRA 到每个 SelfAttentionBlock 的 qkv 层
+        lora_count = 0
+        for block in self.blocks:
+            if hasattr(block, 'attn') and hasattr(block.attn, 'qkv'):
+                # 用 LoRALinear 包装原始 qkv 层
+                block.attn.qkv = LoRALinear(
+                    block.attn.qkv, 
+                    r=r, 
+                    alpha=alpha, 
+                    dropout=dropout
+                )
+                lora_count += 1
+        
+        self._lora_injected = True
+        
+        # 统计可训练参数
+        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in self.parameters())
+        print(f">>> [成功] 已冻结 DINOv3 主干并注入 LoRA (r={r}, alpha={alpha})")
+        print(f">>> [统计] 注入了 {lora_count} 个 LoRA 层")
+        print(f">>> [统计] 可训练参数: {trainable/1e6:.2f}M / 总参数: {total/1e6:.2f}M ({trainable/total:.1%})")
+    
+    def merge_lora_weights(self):
+        """合并 LoRA 权重到基础模型（用于推理加速）"""
+        if not self._lora_injected:
+            print(">>> [跳过] 未注入 LoRA")
+            return
+        
+        merge_count = 0
+        for block in self.blocks:
+            if hasattr(block, 'attn') and hasattr(block.attn, 'qkv'):
+                if isinstance(block.attn.qkv, LoRALinear):
+                    block.attn.qkv = block.attn.qkv.merge_weights()
+                    merge_count += 1
+        
+        self._lora_injected = False
+        print(f">>> [成功] 已合并 {merge_count} 个 LoRA 层到基础模型")
     
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -536,7 +723,8 @@ class dinov3(nn.Module):
         return x_unembedded
     
 
-    def forward(self, x):
+    def forward(self, x, task_id=0):
+        # task_id 参数用于兼容多任务调用，单任务 SR 模型忽略它
         # 只有当模型配置为 3 通道 (预训练模式)，但输入是 1 通道时，才进行复制
         if x.dim() == 4 and x.size(1) == 1 and self.patch_embed.in_chans == 3:
             x = x.repeat(1, 3, 1, 1)
@@ -619,9 +807,9 @@ class dinoProj_stage2(nn.Module):
 # 重写为 DINO 版本的 VCD 模型
 class dinov3_2dto3d(nn.Module):
     def __init__(self, img_size=64, patch_size=1, in_chans=121, out_chans=61,
-                 embed_dim=768, # DINOv3 ViT-B 默认维度
+                 embed_dim=384, # ViT-S 默认维度 (原 ViT-B 为 768)
                  # DINOv3 配置
-                 dino_depth=12, dino_num_heads=12, dino_ffn_ratio=4.0,
+                 dino_depth=12, dino_num_heads=6, dino_ffn_ratio=4.0,  # ViT-S 的头数
                  layerscale_init=1e-4, dino_norm_layer='layernorm', 
                  dino_ffn_layer='mlp', pos_embed_rope_base=100.0,
                  dino_rope_dtype='bf16',
@@ -995,7 +1183,7 @@ class UNetA(nn.Module):
 
 
 class DinoUniModel(nn.Module):
-    def __init__(self, args, embed_dim=768, dino_depth=12, dino_num_heads=12, vit_patch_size=8):
+    def __init__(self, args, embed_dim=384, dino_depth=12, dino_num_heads=6, vit_patch_size=8):  # ViT-S 配置
         super(DinoUniModel, self).__init__()
         self.task = 1
         self.img_range = 1.0
@@ -1116,3 +1304,43 @@ class DinoUniModel(nn.Module):
             return xunet_up, x_out / self.img_range + self.mean
 
         return x_out / self.img_range + self.mean
+
+    def inject_lora(self, r=16, alpha=32, dropout=0.05):
+        """
+        注入 LoRA 到 DINOv3 主干的 attention 层。
+        
+        Args:
+            r: LoRA 秩
+            alpha: LoRA alpha 缩放系数
+            dropout: LoRA dropout
+        """
+        # 检查是否已注入（通过检查第一个 block 的 qkv 是否为 LoRALinear）
+        if hasattr(self.blocks[0].attn.qkv, 'original_linear'):
+            print(">>> [跳过] LoRA 已经注入，无需重复操作")
+            return
+        
+        # 1. 冻结主干参数
+        for param in self.blocks.parameters():
+            param.requires_grad = False
+        if hasattr(self, 'rope_embed'):
+            for param in self.rope_embed.parameters():
+                param.requires_grad = False
+        
+        # 2. 注入 LoRA 到每个 SelfAttentionBlock 的 qkv 层
+        lora_count = 0
+        for block in self.blocks:
+            if hasattr(block, 'attn') and hasattr(block.attn, 'qkv'):
+                block.attn.qkv = LoRALinear(
+                    block.attn.qkv, 
+                    r=r, 
+                    alpha=alpha, 
+                    dropout=dropout
+                )
+                lora_count += 1
+        
+        # 统计可训练参数
+        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in self.parameters())
+        print(f">>> [成功] 已冻结 DINOv3 主干并注入 LoRA (r={r}, alpha={alpha})")
+        print(f">>> [统计] 注入了 {lora_count} 个 LoRA 层")
+        print(f">>> [统计] 可训练参数: {trainable/1e6:.2f}M / 总参数: {total/1e6:.2f}M ({trainable/total:.1%})")

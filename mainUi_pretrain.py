@@ -27,7 +27,7 @@ def options():
     parser = argparse.ArgumentParser(description='FMIR Model')
     parser.add_argument('--task', type=int, default=-1)
     parser.add_argument('--model', default='Uni-SwinIR', help='model name')
-    parser.add_argument('--save', type=str, default='Uni-DINOv3-pretrain', help='file name to save')
+    parser.add_argument('--save', type=str, default='Uni-DINOv3-pretrain-lora', help='file name to save')
     parser.add_argument('--test_only', action='store_true', default=testonly, help='set this option to test the model')
     parser.add_argument('--cpu', action='store_true', default=not gpu, help='cpu only')
     parser.add_argument('--resume', type=int, default=0, help='-2:best;-1:latest; 0:pretrain; >0: resume')
@@ -81,6 +81,14 @@ def options():
                         help='ADAM epsilon for numerical stability')
     parser.add_argument('--weight_decay', type=float, default=0, help='weight decay')
     parser.add_argument('--gclip', type=float, default=0, help='gradient clipping threshold (0 = no clipping)')
+    
+    # ========== LoRA 微调参数 (已禁用，改为全参微调) ==========
+    # parser.add_argument('--use_lora', type=bool, default=use_lora, help='是否启用 LoRA 微调')
+    # parser.add_argument('--lora_r', type=int, default=16, help='LoRA 秩 (rank)')
+    # parser.add_argument('--lora_alpha', type=int, default=32, help='LoRA alpha 缩放系数')
+    # parser.add_argument('--lora_dropout', type=float, default=0.05, help='LoRA dropout')
+    parser.add_argument('--use_lora', type=bool, default=False, help='是否启用 LoRA 微调 (全参微调时设为 False)')
+    # ===================================
     
     # Loss specifications
     parser.add_argument('--loss', type=str, default='1*L1+1*L2', help='loss function configuration')
@@ -990,6 +998,12 @@ if __name__ == '__main__':
     pretrain = '.'
     testonly = False  # True  #
     
+    # ========== 全参微调配置 (ViT-S) ==========
+    # 原 LoRA 配置已禁用，改为全参微调
+    use_lora = False  # 设为 False 使用 ViT-S 全参数微调
+    # use_lora = True  # 设为 True 启用 LoRA 高效微调
+    # ==================================
+    
     args = options()
     torch.manual_seed(args.seed)
     
@@ -1006,13 +1020,13 @@ if __name__ == '__main__':
     # unimodel = model.UniModel(args, tsk=-1)
     # unimodel = DinoUniModel(args)
     # 1. 实例化 DINO 多任务模型
-    # 确保传入 ViT-B 的维度参数
-    unimodel = DinoUniModel(args, embed_dim=768, dino_depth=12, dino_num_heads=12)
+    # 确保传入 ViT-S 的维度参数
+    unimodel = DinoUniModel(args, embed_dim=384, dino_depth=12, dino_num_heads=6)
 
     # 2. 【关键步骤】加载预加载的 DINO 权重
     # 这样主干网络就不是随机初始化的，而是有 ImageNet 知识的
     # preloaded_path = './dinoir_v3_vitb_preloaded.pth' 
-    preloaded_path = './dinoir_v3_vitb_unipreload.pth'  # 确保与 load_pretrain.py 的输出一致
+    preloaded_path = './dinoir_v3_vits_unipreload.pth'  # ViT-S 的预加载权重
     if os.path.exists(preloaded_path):
         print(f"Loading preloaded DINO weights from {preloaded_path}")
         state_dict = torch.load(preloaded_path)
@@ -1031,6 +1045,25 @@ if __name__ == '__main__':
         print(f"Loaded {len(filtered_state_dict)}/{len(state_dict)} keys from checkpoint")
     else:
         print("Warning: Preloaded weights not found, starting from scratch!")
+    
+    # ========== LoRA 注入 (已禁用，改为全参微调) ==========
+    # if args.use_lora:
+    #     print("\n--- [LoRA 模式] 正在注入 LoRA 并冻结主干 ---")
+    #     unimodel.inject_lora(r=args.lora_r, alpha=args.lora_alpha, dropout=args.lora_dropout)
+    #     
+    #     # 统计可训练参数
+    #     total_params = sum(p.numel() for p in unimodel.parameters())
+    #     trainable_params = sum(p.numel() for p in unimodel.parameters() if p.requires_grad)
+    #     print(f"--- [LoRA] 注入后参数统计: 可训练 {trainable_params/1e6:.2f}M / 总参数 {total_params/1e6:.2f}M ({100*trainable_params/total_params:.1f}%) ---")
+    # else:
+    #     print("\n--- [全参数微调模式] ---")
+    # ================================
+    
+    # ViT-S 全参数微调模式
+    print("\n--- [ViT-S 全参数微调模式] ---")
+    total_params = sum(p.numel() for p in unimodel.parameters())
+    trainable_params = sum(p.numel() for p in unimodel.parameters() if p.requires_grad)
+    print(f"--- 参数统计: 可训练 {trainable_params/1e6:.2f}M / 总参数 {total_params/1e6:.2f}M ({100*trainable_params/total_params:.1f}%) ---")
     
     _model = model.Model(args, checkpoint, unimodel)
 

@@ -181,4 +181,22 @@ Shareloc/
 
 output.tif
 # Ignore wandb logs
+wandb/    
+
+BioSR_WF_to_SIM_test.tgz?download=1
+BioSR_WF_to_SIM_train_CCP.tgz?download=1
+BioSR_WF_to_SIM_train_ER.tgz?download=1
+BioSR_WF_to_SIM_train_F-actin.tgz?download=1
+BioSR_WF_to_SIM_train_MTs.tgz?download=1
+DeepBacs.tgz?download=1
+Denoising_Planaria_test.tgz?download=1
+Denoising_Planaria_train.tgz?download=1
+Denoising_Tribolium.tgz?download=1
+Isotropic_Liver.tgz?download=1
+Projection_Flywing.tgz?download=1
+Shareloc.tgz?download=1
+Synthetic.tgz?download=1
+VCD.tgz?download=1
+pretrain.zip
+Isotropic_Liver.tgz?download=1
 wandb/
