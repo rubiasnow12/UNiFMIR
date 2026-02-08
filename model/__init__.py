@@ -363,14 +363,21 @@ class Model(nn.Module):
         if w_size * h_size < min_size:
             sr_list = []
             sr_stg1_list = []  # 用于存储第一阶段输出（任务4和5）
+            eacm_loss_list = []  # 用于存储 EACM 对比损失（任务4）
             for i in range(0, 4, n_GPUs):
                 lr_batch = torch.cat(lr_list[i:(i + n_GPUs)], dim=0)
                 result = self.model(lr_batch, task_id)
-                # 检查是否是 tuple（任务4和5返回两个输出）
+                # 检查是否是 tuple（任务4返回3个输出，任务5返回2个输出）
                 if isinstance(result, tuple):
-                    sr_stg1_batch, sr_batch = result
-                    sr_stg1_list.extend(sr_stg1_batch.chunk(n_GPUs, dim=0))
-                    sr_list.extend(sr_batch.chunk(n_GPUs, dim=0))
+                    if len(result) == 3:
+                        # task 4: (x2d, sr, eacm_loss)
+                        sr_stg1_list.extend(result[0].chunk(n_GPUs, dim=0))
+                        sr_list.extend(result[1].chunk(n_GPUs, dim=0))
+                        eacm_loss_list.append(result[2])
+                    else:
+                        # task 5: (stg1, sr)
+                        sr_stg1_list.extend(result[0].chunk(n_GPUs, dim=0))
+                        sr_list.extend(result[1].chunk(n_GPUs, dim=0))
                 else:
                     sr_list.extend(result.chunk(n_GPUs, dim=0))
         else:
@@ -379,11 +386,18 @@ class Model(nn.Module):
                 for patch in lr_list]
             # 分离可能的 tuple 结果
             if isinstance(results[0], tuple):
-                sr_stg1_list = [r[0] for r in results]
-                sr_list = [r[1] for r in results]
+                if len(results[0]) == 3:
+                    sr_stg1_list = [r[0] for r in results]
+                    sr_list = [r[1] for r in results]
+                    eacm_loss_list = [r[2] for r in results]
+                else:
+                    sr_stg1_list = [r[0] for r in results]
+                    sr_list = [r[1] for r in results]
+                    eacm_loss_list = []
             else:
                 sr_list = results
                 sr_stg1_list = []
+                eacm_loss_list = []
 
         h, w = scale * h, scale * w
         h_half, w_half = scale * h_half, scale * w_half
@@ -411,6 +425,10 @@ class Model(nn.Module):
                 = sr_stg1_list[2][:, :, (h_size - h + h_half):h_size, 0:w_half]
             output_stg1[:, :, h_half:h, w_half:w] \
                 = sr_stg1_list[3][:, :, (h_size - h + h_half):h_size, (w_size - w + w_half):w_size]
+            # 如果有 EACM loss（task 4），取平均并返回
+            if eacm_loss_list:
+                avg_eacm_loss = sum(eacm_loss_list) / len(eacm_loss_list)
+                return output_stg1, output, avg_eacm_loss
             return output_stg1, output
 
         return output

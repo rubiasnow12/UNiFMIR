@@ -17,7 +17,8 @@ import imageio
 import numpy as np
 from tifffile import imsave
 import random
-from model.dinoir_v3 import DinoUniModel 
+from model.dinoir_v3 import DinoUniModel, DinoUniModelV2
+from analysis import GradientConflictAnalyzer, compute_gradient_similarity_in_training
 
 
 gpu = torch.cuda.is_available()
@@ -128,6 +129,15 @@ class PreTrainer():
         if self.args.load != '':
             self.optimizer.load(ckp.dir, epoch=len(ckp.log))
         
+        # ===== 梯度冲突分析器 =====
+        self.grad_analyzer = GradientConflictAnalyzer(
+            save_dir=os.path.join(os.path.dirname(__file__), 'experiment', self.args.save, 'gradient_analysis'))
+        self.grad_analysis_interval = 100  # 每 100 个 step 分析一次
+        self.global_step = 0
+        # 用于梯度分析的数据缓存（SR 和 Denoise 各一个 batch）
+        self._grad_cache_sr = None
+        self._grad_cache_dn = None
+        
         self.error_last = 1e8
         rp = os.path.dirname(__file__)
         self.dir = os.path.join(rp, 'experiment', self.args.save)
@@ -171,11 +181,12 @@ class PreTrainer():
                 sr = self.model(lr, self.tsk)
                 loss = self.loss(sr, hr)
             elif self.tsk == 4:
-                sr_stg1, sr = self.model(lr, self.tsk)
+                sr_stg1, sr, eacm_loss = self.model(lr, self.tsk)
+                lambda_eacm = 0.1  # EACM 对比损失权重
                 if self.epoch_tsk4 <= 30:
-                    loss = 0.001 * self.loss(sr_stg1, hr) + self.loss(sr, hr)
+                    loss = 0.001 * self.loss(sr_stg1, hr) + self.loss(sr, hr) + lambda_eacm * eacm_loss
                 else:
-                    loss = self.loss(sr, hr)
+                    loss = self.loss(sr, hr) + lambda_eacm * eacm_loss
             elif self.tsk == 5:
                 sr_stg1, sr = self.model(lr, self.tsk)
                 if self.epoch_tsk5 <= 30:
@@ -187,6 +198,38 @@ class PreTrainer():
             if self.args.gclip > 0:
                 utils.clip_grad_value_(self.model.parameters(), self.args.gclip)
             self.optimizer.step()
+            
+            # ===== 梯度冲突分析（每 grad_analysis_interval 步）=====
+            self.global_step += 1
+            if self.tsk in [1, 2] and self.global_step % self.grad_analysis_interval == 0:
+                # 缓存当前任务的数据
+                if self.tsk == 1:
+                    self._grad_cache_sr = (lr.detach().clone(), hr.detach().clone())
+                elif self.tsk == 2:
+                    self._grad_cache_dn = (lr.detach().clone(), hr.detach().clone())
+                # 当两个任务的数据都缓存好了，计算梯度相似度
+                if self._grad_cache_sr is not None and self._grad_cache_dn is not None:
+                    try:
+                        sim = compute_gradient_similarity_in_training(
+                            self.model, self.loss,
+                            self._grad_cache_sr, self._grad_cache_dn,
+                            task1_id=1, task2_id=2, device=self.device
+                        )
+                        self.grad_analyzer.log_step(sim, step=self.global_step, task_pair='sr_vs_dn')
+                        wandb.log({
+                            'grad_sim/backbone_all': sim.get('backbone_all', 0),
+                            'grad_sim/shallow(0-3)': sim.get('shallow', 0),
+                            'grad_sim/middle(4-7)': sim.get('middle', 0),
+                            'grad_sim/deep(8-11)': sim.get('deep', 0),
+                            'global_step': self.global_step,
+                        })
+                        print(f'  📊 Grad Cosine Sim (SR vs DN): '
+                              f'all={sim.get("backbone_all", 0):.4f} '
+                              f'shallow={sim.get("shallow", 0):.4f} '
+                              f'deep={sim.get("deep", 0):.4f}')
+                    except Exception as e:
+                        print(f'  ⚠️ Gradient analysis failed: {e}')
+            
             timer_model.hold()
             if batch % self.args.print_every == 0:
                 sr2dim = np.float32(normalize(np.squeeze(sr[0].cpu().detach().numpy()), 0, 100, clip=True)) * 255
@@ -195,7 +238,7 @@ class PreTrainer():
                 print('training patch- PSNR/SSIM = %f/%f' % (psm, ssmm))
                 
                 # wandb 日志记录
-                wandb.log({
+                log_dict = {
                     'epoch': epoch,
                     'batch': batch,
                     'task': self.tsk,
@@ -203,7 +246,10 @@ class PreTrainer():
                     'train_psnr': psm,
                     'train_ssim': ssmm,
                     'lr': self.optimizer.get_lr()
-                })
+                }
+                if self.tsk == 4:
+                    log_dict['eacm_loss'] = eacm_loss.item()
+                wandb.log(log_dict)
                 
                 if self.tsk == 4 or self.tsk == 5:
                     sr2dimu = np.float32(
@@ -263,6 +309,15 @@ class PreTrainer():
         self.model.save(self.dir + '/model/', epoch, is_best=False)
         self.model.scale = 1
         print('save model Epoch%d' % epoch, loss)
+        
+        # ===== 保存梯度分析结果 =====
+        if self.grad_analyzer.history:
+            self.grad_analyzer.save_results(f'gradient_sim_epoch{epoch}.json')
+            try:
+                json_path = os.path.join(self.grad_analyzer.save_dir, f'gradient_sim_epoch{epoch}.json')
+                GradientConflictAnalyzer.plot_gradient_similarity(json_path)
+            except Exception as e:
+                print(f'绘制梯度分析图失败: {e}')
     
     def testall(self, tsk, subd=-1, condition=1):
         datasetname = self.changeTask(tsk, subd, condition=condition)
@@ -685,7 +740,7 @@ class PreTrainer():
             # 1.3D norm 2 998
             lrt, hrt = self.prepare(lrt, hrt)
             
-            a_stg1, a = self.model(lrt, 4)  # [1, 1, h, w]
+            a_stg1, a, _ = self.model(lrt, 4)  # eval 模式下 eacm_loss=0，丢弃即可
             
             sr_stg1 = np.float32(np.squeeze(a_stg1.cpu().detach().numpy()))
             sr = np.float32(np.squeeze(a.cpu().detach().numpy()))
@@ -1017,20 +1072,40 @@ if __name__ == '__main__':
     
     checkpoint = utility.checkpoint(args)
     assert checkpoint.ok
-    # unimodel = model.UniModel(args, tsk=-1)
-    # unimodel = DinoUniModel(args)
-    # 1. 实例化 DINO 多任务模型
-    # 确保传入 ViT-S 的维度参数
-    unimodel = DinoUniModel(args, embed_dim=384, dino_depth=12, dino_num_heads=6)
 
-    # 2. 【关键步骤】加载预加载的 DINO 权重
-    # 这样主干网络就不是随机初始化的，而是有 ImageNet 知识的
-    # preloaded_path = './dinoir_v3_vitb_preloaded.pth' 
-    preloaded_path = './dinoir_v3_vits_unipreload.pth'  # ViT-S 的预加载权重
+    # ========== 模型版本选择 ==========
+    # USE_V2 = False  → V1: DinoUniModel（多头任务，每个任务独立 conv_first）
+    # USE_V2 = True   → V2: DinoUniModelV2（Task Embedding + FiLM 调制 + 统一输入层）
+    USE_V2 = True
+    # ==================================
+
+    if USE_V2:
+        print("\n" + "="*60)
+        print("🚀 使用 DinoUniModelV2: Task Embedding + FiLM 调制 + 统一输入层")
+        print("="*60)
+        unimodel = DinoUniModelV2(
+            args, embed_dim=384, dino_depth=12, dino_num_heads=6,
+            task_embed_dim=64  # 任务嵌入维度
+        )
+    else:
+        print("\n" + "="*60)
+        print("📋 使用 DinoUniModel V1: 多头任务模式")
+        print("="*60)
+        unimodel = DinoUniModel(args, embed_dim=384, dino_depth=12, dino_num_heads=6)
+
+    # 【关键步骤】加载预加载的 DINO 权重
+    # V1 和 V2 共享相同的 backbone (blocks/norm)，可以用同一个预训练权重
+    if USE_V2:
+        preloaded_path = './dinoir_v3_vits_v2preload.pth'
+        # 如果 V2 权重不存在，回退到 V1 权重（backbone 部分兼容）
+        if not os.path.exists(preloaded_path):
+            preloaded_path = './dinoir_v3_vits_unipreload.pth'
+            print(f"  ℹ️ V2 权重不存在，回退到 V1 权重（backbone 兼容）")
+    else:
+        preloaded_path = './dinoir_v3_vits_unipreload.pth'
     if os.path.exists(preloaded_path):
-        print(f"Loading preloaded DINO weights from {preloaded_path}")
+        print(f"\nLoading preloaded DINO weights from {preloaded_path}")
         state_dict = torch.load(preloaded_path)
-        # 过滤掉形状不匹配的 key（如 project.head 因输入通道数变化）
         model_state = unimodel.state_dict()
         filtered_state_dict = {}
         for k, v in state_dict.items():
@@ -1038,32 +1113,56 @@ if __name__ == '__main__':
                 if v.shape == model_state[k].shape:
                     filtered_state_dict[k] = v
                 else:
-                    print(f"Skipping '{k}' due to shape mismatch: checkpoint {v.shape} vs model {model_state[k].shape}")
+                    print(f"  ⏭️ Skipping '{k}': shape {v.shape} vs {model_state[k].shape}")
             else:
-                print(f"Skipping '{k}' as it's not in the model")
+                print(f"  ⏭️ Skipping '{k}': not in model")
         unimodel.load_state_dict(filtered_state_dict, strict=False)
-        print(f"Loaded {len(filtered_state_dict)}/{len(state_dict)} keys from checkpoint")
+        print(f"  ✅ Loaded {len(filtered_state_dict)}/{len(state_dict)} keys from checkpoint")
     else:
-        print("Warning: Preloaded weights not found, starting from scratch!")
-    
-    # ========== LoRA 注入 (已禁用，改为全参微调) ==========
-    # if args.use_lora:
-    #     print("\n--- [LoRA 模式] 正在注入 LoRA 并冻结主干 ---")
-    #     unimodel.inject_lora(r=args.lora_r, alpha=args.lora_alpha, dropout=args.lora_dropout)
-    #     
-    #     # 统计可训练参数
-    #     total_params = sum(p.numel() for p in unimodel.parameters())
-    #     trainable_params = sum(p.numel() for p in unimodel.parameters() if p.requires_grad)
-    #     print(f"--- [LoRA] 注入后参数统计: 可训练 {trainable_params/1e6:.2f}M / 总参数 {total_params/1e6:.2f}M ({100*trainable_params/total_params:.1f}%) ---")
-    # else:
-    #     print("\n--- [全参数微调模式] ---")
-    # ================================
-    
-    # ViT-S 全参数微调模式
-    print("\n--- [ViT-S 全参数微调模式] ---")
+        print("⚠️ Warning: Preloaded weights not found, starting from scratch!")
+
+    # ========== 部分冻结微调：冻结位置编码 + 浅层 ==========
+    freeze_depth = 0  # 冻结前 N 层 Transformer Block（共 12 层）
+    print(f"\n--- [部分冻结微调] 冻结位置编码 + Patch Embed + 前 {freeze_depth} 层 Block ---")
+
+    for name, param in unimodel.named_parameters():
+        # 1. 冻结位置编码 (RoPE)
+        if "rope_embed" in name:
+            param.requires_grad = False
+            print(f"  ❌ Frozen: {name}")
+        # 2. 冻结 Patch Embedding
+        elif name.startswith("patch_embed"):
+            param.requires_grad = False
+            print(f"  ❌ Frozen: {name}")
+        # 3. 冻结前 N 个 Transformer Blocks
+        elif "blocks." in name:
+            parts = name.split('.')
+            try:
+                block_idx = int(parts[parts.index("blocks") + 1])
+                if block_idx < freeze_depth:
+                    param.requires_grad = False
+                    print(f"  ❌ Frozen: {name} (Block {block_idx})")
+            except (ValueError, IndexError):
+                pass
+        # 4. 冻结全局 Norm 层
+        elif name == "norm.weight" or name == "norm.bias":
+            param.requires_grad = False
+            print(f"  ❌ Frozen: {name}")
+
+    # 注意：FiLM 调制器、Task Embedding、统一输入层 始终保持可训练
+    # 统计参数
     total_params = sum(p.numel() for p in unimodel.parameters())
     trainable_params = sum(p.numel() for p in unimodel.parameters() if p.requires_grad)
-    print(f"--- 参数统计: 可训练 {trainable_params/1e6:.2f}M / 总参数 {total_params/1e6:.2f}M ({100*trainable_params/total_params:.1f}%) ---")
+    frozen_params = total_params - trainable_params
+    print(f"\n--- 参数统计 ---")
+    print(f"  总参数:     {total_params/1e6:.2f}M")
+    print(f"  冻结参数:   {frozen_params/1e6:.2f}M ({100*frozen_params/total_params:.1f}%)")
+    print(f"  可训练参数: {trainable_params/1e6:.2f}M ({100*trainable_params/total_params:.1f}%)")
+    if USE_V2:
+        print(f"--- 可训练: FiLM调制器×13 + TaskEmbed + 统一输入层 + Block{freeze_depth}~11 + Tails ---")
+    else:
+        print(f"--- 可训练: Block {freeze_depth}~11 + 所有 Task Head/Tail + conv_after_body + decoder ---")
+    # ==========================================================
     
     _model = model.Model(args, checkpoint, unimodel)
 

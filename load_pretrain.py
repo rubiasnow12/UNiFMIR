@@ -7,7 +7,8 @@ import os
 print("正在导入模型...")
 try:
     from model.dinoir_v3 import dinov3  # 导入 dinov3 类（用于 SR 任务）
-    from model.dinoir_v3 import DinoUniModel  # 导入通用模型类
+    from model.dinoir_v3 import DinoUniModel  # 导入通用模型类 V1
+    from model.dinoir_v3 import DinoUniModelV2  # 导入通用模型类 V2 (Task Embedding + FiLM)
     print("...导入成功！")
 except Exception as e:
     print(f"导入失败: {e}")
@@ -17,48 +18,58 @@ except Exception as e:
 dino_checkpoint_path = 'dinov3_vits16_pretrain_lvd1689m-08c60483.pth' 
 
 # ========== 选择要创建的模型类型 ==========
-# 如果你想用于 SR 任务（单一任务），使用 dinov3
-# 如果你想用于多任务（SR/Denoise/Iso 等），使用 DinoUniModel
-USE_UNIVERSAL_MODEL = False  # False = dinov3（SR专用），True = DinoUniModel（多任务）
+# 'sr'     → dinov3（SR 单任务）
+# 'v1'     → DinoUniModel（多头任务，每个任务独立 conv_first）
+# 'v2'     → DinoUniModelV2（Task Embedding + FiLM 调制 + 统一输入层）
+MODEL_TYPE = 'v2'  # ← 改这里选择模型版本
 
 # 根据模型类型设置输出文件名
-if USE_UNIVERSAL_MODEL:
-    output_checkpoint_path = 'dinoir_v3_vits_uni_preload.pth'  # 多任务版本 (ViT-S)
-else:
-    output_checkpoint_path = 'dinoir_v3_vits_sr_preload.pth'   # SR 专用版本 (ViT-S)
+output_checkpoint_map = {
+    'sr': 'dinoir_v3_vits_sr_preload.pth',
+    'v1': 'dinoir_v3_vits_unipreload.pth',
+    'v2': 'dinoir_v3_vits_v2preload.pth',
+}
+output_checkpoint_path = output_checkpoint_map[MODEL_TYPE]
 
 
-# 修改 load_pretrain.py 中的步骤 3
+# 构造模拟参数
 mock_args = argparse.Namespace()
-mock_args.n_resblocks = 8      # UniFMIR 默认参数
-mock_args.n_feats = 32         # UniFMIR 默认参数
-mock_args.scale = [1]          # 缩放倍率
-mock_args.inch = 1             # 输入通道
-mock_args.n_colors = 1         # 输出通道 (对应 outch)
-mock_args.rgb_range = 1        # 图像数值范围 (对应 MeanShift)
-mock_args.res_scale = 1.0      # 残差缩放比例
-mock_args.dilation = False     # 对应 enlcn.py 中的 make_model 判断
+mock_args.n_resblocks = 8
+mock_args.n_feats = 32
+mock_args.scale = [1]
+mock_args.inch = 1
+mock_args.n_colors = 1
+mock_args.rgb_range = 1
+mock_args.res_scale = 1.0
+mock_args.dilation = False
 
-if USE_UNIVERSAL_MODEL:
-    print("正在实例化 DinoUniModel (ViT-S 尺寸) 模型...")
-    # 实例化模型，关键点是把 args=None 改成 args=mock_args
+if MODEL_TYPE == 'v2':
+    print("正在实例化 DinoUniModelV2 (Task Embedding + FiLM) 模型...")
+    model = DinoUniModelV2(
+        args=mock_args,
+        embed_dim=384,
+        dino_depth=12,
+        dino_num_heads=6,
+        task_embed_dim=64,
+    )
+elif MODEL_TYPE == 'v1':
+    print("正在实例化 DinoUniModel V1 (ViT-S) 模型...")
     model = DinoUniModel(
-        args=mock_args,      # ← 修改这里，传入模拟的参数对象
-        embed_dim=384,       # ViT-S 的维度
-        dino_depth=12,       # ViT-S 的深度
-        dino_num_heads=6,    # ViT-S 的头数
+        args=mock_args,
+        embed_dim=384,
+        dino_depth=12,
+        dino_num_heads=6,
     )
 else:
-    print("正在实例化 dinov3 (ViT-S 尺寸) 模型 (use_lora=False，便于加载原始权重)...")
-    # 关键：use_lora=False，先不注入 LoRA，等加载完权重后再注入
+    print("正在实例化 dinov3 (ViT-S) SR 专用模型...")
     model = dinov3(
-        in_chans=1, 
+        in_chans=1,
         out_chans=1,
-        embed_dim=384,       # ViT-S 的维度
-        dino_depth=12,       # ViT-S 的深度
-        dino_num_heads=6,    # ViT-S 的头数
+        embed_dim=384,
+        dino_depth=12,
+        dino_num_heads=6,
         upscale=2,
-        use_lora=False,  # ← 重要：先不启用 LoRA
+        use_lora=False,
     )
 
 model_state_dict = model.state_dict()
@@ -115,12 +126,16 @@ print("\n" + "="*60)
 print("✅ 全部完成!")
 print("="*60)
 print(f"\n📁 生成的权重文件: '{output_checkpoint_path}'")
-print("\n📝 ViT-S 全参微调流程:")
-print("   1. 在 mainSR_dino.py 中设置:")
-print("      - test_only = False")
-print("      - use_lora = False  (已禁用 LoRA，使用全参微调)")
-print("      - resume = 0")
-print(f"      - modelpaths = './{output_checkpoint_path}',")
-print("   2. 运行 python mainSR_dino.py")
-print("   3. 系统会自动: 加载权重 → 全参数训练 (冻结位置编码)")
-print("\n   注意: ViT-S 比 ViT-B 参数量更小，全参微调更加高效！")
+print(f"\n📝 模型类型: {MODEL_TYPE}")
+if MODEL_TYPE == 'v2':
+    print("\n📝 V2 多任务训练流程 (Task Embedding + FiLM):")
+    print("   1. 在 mainUi_pretrain.py 中设置:")
+    print("      - USE_V2 = True")
+    print("      - freeze_depth = 0  (冻结前0层)")
+    print(f"      - preloaded_path = './{output_checkpoint_path}'")
+    print("   2. 运行 python mainUi_pretrain.py")
+    print("   3. 系统会自动: 加载权重 → FiLM 调制多任务训练")
+else:
+    print("\n📝 V1/SR 训练流程:")
+    print(f"      - preloaded_path = './{output_checkpoint_path}'")
+    print("   运行 python mainUi_pretrain.py 或 python mainSR_dino.py")
