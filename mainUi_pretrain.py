@@ -28,7 +28,7 @@ def options():
     parser = argparse.ArgumentParser(description='FMIR Model')
     parser.add_argument('--task', type=int, default=-1)
     parser.add_argument('--model', default='Uni-SwinIR', help='model name')
-    parser.add_argument('--save', type=str, default='Uni-DINOv3-pretrain-lora', help='file name to save')
+    parser.add_argument('--save', type=str, default='Uni-DINOv3-pretrain', help='file name to save')
     parser.add_argument('--test_only', action='store_true', default=testonly, help='set this option to test the model')
     parser.add_argument('--cpu', action='store_true', default=not gpu, help='cpu only')
     parser.add_argument('--resume', type=int, default=0, help='-2:best;-1:latest; 0:pretrain; >0: resume')
@@ -56,7 +56,7 @@ def options():
     parser.add_argument('--n_feats', type=int, default=32, help='number of feature maps')
 
     parser.add_argument('--save_models', action='store_true', default=True, help='save all intermediate models')
-    parser.add_argument('--save_every', type=int, default=50, help='save checkpoint every N epochs (default: 50)')
+    parser.add_argument('--save_every', type=int, default=20, help='save checkpoint every N epochs (default: 50)')
 
     parser.add_argument('--template', default='.', help='You can set various templates in option.py')
     parser.add_argument('--scale', type=str, default='1', help='super resolution scale')
@@ -633,14 +633,24 @@ class PreTrainer():
                 x_rot1 = np.expand_dims(np.squeeze(x_rot1), 1)
                 
                 x_rot1 = torch.from_numpy(np.ascontiguousarray(x_rot1)).float()
-                x_rot1 = self.prepare(x_rot1)[0]
-                a1 = self.model(x_rot1, 3)  # Task 3: Isotropic
+                # 输入保持在 CPU，切片时再上 GPU，极致省显存
                 
-                a1 = np.expand_dims(np.squeeze(a1.cpu().detach().numpy()), -1)
+                # Mini-batch 推理，避免 OOM
+                mini_bs = 16
+                a1_chunks = []
+                with torch.no_grad():
+                    for i in range(0, x_rot1.shape[0], mini_bs):
+                        batch_in = self.prepare(x_rot1[i:i + mini_bs])[0]
+                        batch_out = self.model(batch_in, 3)
+                        a1_chunks.append(batch_out.cpu())
+                        del batch_in, batch_out
+                a1 = torch.cat(a1_chunks, dim=0)
+                
+                a1 = np.expand_dims(np.squeeze(a1.detach().numpy()), -1)
                 u1 = _rotate(a1, -1, axis=1, copy=False)
                 isoim1[:, :, wp:wp + batchstep, :] = u1
-                del x_rot1, a1  # 释放中间变量
-                torch.cuda.empty_cache()  # 每次循环后清理显存
+                del x_rot1, a1, a1_chunks
+                torch.cuda.empty_cache()
             for hp in range(0, hr.shape[1], batchstep):
                 if hp + batchstep >= hr.shape[1]:
                     hp = hr.shape[1] - batchstep
@@ -649,13 +659,24 @@ class PreTrainer():
                 x_rot2 = np.expand_dims(np.squeeze(x_rot2), 1)
                 
                 x_rot2 = torch.from_numpy(np.ascontiguousarray(x_rot2)).float()
-                a2 = self.model(self.prepare(x_rot2)[0], 0)
+                # 输入保持在 CPU，切片时再上 GPU，极致省显存
                 
-                a2 = np.expand_dims(np.squeeze(a2.cpu().detach().numpy()), -1)
+                # Mini-batch 推理，避免 OOM
+                mini_bs = 16
+                a2_chunks = []
+                with torch.no_grad():
+                    for i in range(0, x_rot2.shape[0], mini_bs):
+                        batch_in = self.prepare(x_rot2[i:i + mini_bs])[0]
+                        batch_out = self.model(batch_in, 3)
+                        a2_chunks.append(batch_out.cpu())
+                        del batch_in, batch_out
+                a2 = torch.cat(a2_chunks, dim=0)
+                
+                a2 = np.expand_dims(np.squeeze(a2.detach().numpy()), -1)
                 u2 = _rotate(_rotate(a2, -1, axis=0, copy=False), -1, axis=2, copy=False)
                 isoim2[:, hp:hp + batchstep, :, :] = u2
-                del x_rot2, a2  # 释放中间变量
-                torch.cuda.empty_cache()  # 每次循环后清理显存
+                del x_rot2, a2, a2_chunks
+                torch.cuda.empty_cache()
             
             sr = np.sqrt(np.maximum(isoim1, 0) * np.maximum(isoim2, 0))
             print('sr.shape = ', sr.shape)
