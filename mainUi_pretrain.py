@@ -56,6 +56,7 @@ def options():
     parser.add_argument('--n_feats', type=int, default=32, help='number of feature maps')
 
     parser.add_argument('--save_models', action='store_true', default=True, help='save all intermediate models')
+    parser.add_argument('--save_every', type=int, default=50, help='save checkpoint every N epochs (default: 50)')
 
     parser.add_argument('--template', default='.', help='You can set various templates in option.py')
     parser.add_argument('--scale', type=str, default='1', help='super resolution scale')
@@ -306,9 +307,11 @@ class PreTrainer():
         self.optimizer.schedule()
         
         self.file.write('Name \n PSNR \n' + str(self.pslst) + '\n SSIM \n' + str(self.sslst))
-        self.model.save(self.dir + '/model/', epoch, is_best=False)
+        # 始终保存 model_latest.pt；仅每 save_every 个 epoch 保存带编号的 checkpoint
+        save_numbered = (epoch % self.args.save_every == 0) or (epoch == self.args.epochs)
+        self.model.save(self.dir + '/model/', epoch, is_best=False, save_numbered=save_numbered)
         self.model.scale = 1
-        print('save model Epoch%d' % epoch, loss)
+        print('save model Epoch%d (numbered=%s)' % (epoch, save_numbered), loss)
         
         # ===== 保存梯度分析结果 =====
         if self.grad_analyzer.history:

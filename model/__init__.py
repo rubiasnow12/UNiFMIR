@@ -179,8 +179,9 @@ class Model(nn.Module):
         target = self.get_model()
         return target.state_dict(**kwargs)
 
-    def save(self, apath, epoch, is_best=False):
+    def save(self, apath, epoch, is_best=False, save_numbered=True):
         target = self.get_model()
+        os.makedirs(apath, exist_ok=True)
         torch.save(
             target.state_dict(), 
             os.path.join(apath, 'model_latest.pt')
@@ -191,7 +192,7 @@ class Model(nn.Module):
                 os.path.join(apath, 'model_best.pt')
             )
         
-        if self.save_models:
+        if self.save_models and save_numbered:
             torch.save(
                 target.state_dict(),
                 os.path.join(apath, 'model_{}.pt'.format(epoch))
