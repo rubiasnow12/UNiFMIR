@@ -299,7 +299,7 @@ class PreTrainer():
                 lr = self.optimizer.get_lr()
                 print('Evaluation -- Batch%d/Epoch%d' % (batch, epoch))
                 self.ckp.write_log('Batch%d/Epoch%d' % (batch, epoch) +
-                                   '\tLearning rate: {:.2e}'.format(epoch, Decimal(lr)))
+                                   '\tLearning rate: {:.2e}'.format(Decimal(lr)))
                 self.loss.start_log()
         
         self.loss.end_log(len(self.loader_train))
@@ -398,7 +398,7 @@ class PreTrainer():
             if psnrmean > self.bestpsnr:
                 self.bestpsnr = psnrmean
                 self.bestep = epoch
-                self.model.save(self.dir, epoch, is_best=(self.bestep == epoch))
+                self.model.save(self.dir, epoch, is_best=(self.bestep == epoch), save_numbered=False)
         
         print('num = ', num, 'psnrmean SSIM = ', psnrmean, ssimmean)
         torch.set_grad_enabled(True)
@@ -560,7 +560,7 @@ class PreTrainer():
             if psnrm > self.bestpsnr:
                 self.bestpsnr = psnrm
                 self.bestep = epoch
-            self.model.save(self.dir, epoch, is_best=(self.bestep == epoch))
+            self.model.save(self.dir, epoch, is_best=(self.bestep == epoch), save_numbered=False)
         print('%%% ~~~~~~~~~~~~ %%% psnrm, self.bestpsnr, self.bestep ', psnrm, self.bestpsnr, self.bestep)
         print('psnrm, np.mean(np.array(sslst)) = ', psnrm, ssimm)
         torch.set_grad_enabled(True)
@@ -732,7 +732,7 @@ class PreTrainer():
             if psnrm > self.bestpsnr:
                 self.bestpsnr = psnrm
                 self.bestep = epoch
-                self.model.save(self.dir, epoch, is_best=(self.bestep == epoch))
+                self.model.save(self.dir, epoch, is_best=(self.bestep == epoch), save_numbered=False)
         print('%%% ~~~~~~~~~~~~ %%% psnrm, self.bestpsnr, self.bestep ', psnrm, self.bestpsnr, self.bestep)
         torch.set_grad_enabled(True)
         return psnrm, ssmm
@@ -804,7 +804,7 @@ class PreTrainer():
             if psnrallm > self.bestpsnr:
                 self.bestpsnr = psnrallm
                 self.bestep = epoch
-            self.model.save(self.dir, epoch, is_best=(self.bestep == epoch))
+            self.model.save(self.dir, epoch, is_best=(self.bestep == epoch), save_numbered=False)
         
         print('+++++++++ condition %d StageI/II ++++++++++++' % condition, psnrallm, ssimallm, psnrallms1, ssimallms1)
         print('%%% ~~~~~~~~~~~~ %%% psnrm, self.bestpsnr, self.bestep ', psnrallm, self.bestpsnr, self.bestep)
@@ -937,7 +937,7 @@ class PreTrainer():
             self.bestpsnr = psnrmean
             self.bestep = epoch
         if not self.args.test_only:
-            self.model.save(self.dir, epoch, is_best=(self.bestep == epoch))
+            self.model.save(self.dir, epoch, is_best=(self.bestep == epoch), save_numbered=False)
         print('+++++++++ StageI/II ++++++++++++', psnrmeans1, ssmeans1, psnrmeans2, ssmeans2)
         print('%%% ~~~~~~~~~~~~ %%% psnrm, self.bestpsnr, self.bestep ', psnrmean, self.bestpsnr, self.bestep)
         
