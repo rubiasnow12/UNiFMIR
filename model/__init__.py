@@ -167,7 +167,7 @@ class Model(nn.Module):
         # 任务5 (Volume) 使用特殊的 11x 上采样，不适合 forward_chop
         # 直接调用模型
         if self.args.chop and task_id != 5:
-            result = self.forward_chop(x, task_id=task_id, min_size=600000)
+            result = self.forward_chop(x, task_id=task_id, min_size=160000)
         else:
             result = self.model(x, task_id)
         return result

@@ -1607,3 +1607,246 @@ class DinoUniModelV2(nn.Module):
             return xunet_up, x_out / self.img_range + self.mean
 
         return x_out / self.img_range + self.mean
+
+
+# ============================================================
+# DinoUniModelV3: 任务专用输入头 + FiLM 调制（改进版）
+#   改进1: 保留任务专用的 conv_first（与 V1 一致），替代 zero-pad 统一输入
+#   改进2: 增大 task_embed_dim（默认 128）
+#   改进3: FiLM MLP 增加一层，提升容量
+# ============================================================
+class DinoUniModelV3(nn.Module):
+    """
+    统一多任务模型 V3:
+    - 任务专用输入头：每个任务保留独立的 conv_first（与 V1 一致），精确匹配输入通道数
+    - 任务嵌入：可学习的 Lookup Table，每个任务对应一个 Embedding 向量
+    - FiLM 调制：在 Backbone 的每个 Transformer Block 后，用任务嵌入生成 γ/β 调制特征
+    
+    相比 V2 的改进:
+    1. 去掉 zero-pad + 统一 1x1 Conv，改为任务专用 conv_first → 信噪比大幅提升
+    2. task_embed_dim 增大到 128 → FiLM 调制容量更强
+    3. FiLM MLP 增加一层 → 更好的任务条件建模
+    """
+    NUM_TASKS = 5
+
+    def __init__(self, args, embed_dim=384, dino_depth=12, dino_num_heads=6,
+                 vit_patch_size=8, task_embed_dim=128):
+        super(DinoUniModelV3, self).__init__()
+        self.task = 1
+        self.img_range = 1.0
+        self.mean = torch.zeros(1, 1, 1, 1)
+        self.embed_dim = embed_dim
+        self.vit_patch_size = vit_patch_size
+        self.task_embed_dim = task_embed_dim
+        self.dino_depth = dino_depth
+
+        # =============================================
+        # 1. 任务嵌入查询表 (Task Embedding Lookup Table)
+        # =============================================
+        self.task_embedding = nn.Embedding(self.NUM_TASKS, task_embed_dim)
+        nn.init.normal_(self.task_embedding.weight, std=0.02)
+
+        # =============================================
+        # 2. 任务专用输入头 (Task-Specific Heads) — 与 V1 一致
+        # =============================================
+        # Task 1 (SR): 1ch → embed_dim
+        self.conv_firstsr = nn.Conv2d(1, embed_dim, 3, 1, 1)
+        # Task 2 (Denoise): 5ch → embed_dim
+        self.conv_firstdT = nn.Conv2d(5, embed_dim, 3, 1, 1)
+        # Task 3 (Isotropic): 1ch → embed_dim
+        self.conv_firstiso = nn.Conv2d(1, embed_dim, 3, 1, 1)
+        # Task 4 (Projection): ENLCN(50ch → 1ch) → embed_dim
+        args_proj = copy.deepcopy(args)
+        args_proj.inch = 50
+        self.project = ENLCN(args=args_proj)
+        self.conv_firstproj = nn.Conv2d(1, embed_dim, 3, 1, 1)
+        # Task 5 (Volume): UNetA(121ch → 61ch) → embed_dim
+        self.conv_first0 = UNetA(121, 61)
+        self.conv_firstv = nn.Conv2d(61, embed_dim, 3, 1, 1)
+
+        # =============================================
+        # 3. 共享主干 (Shared Backbone) — 与 V1/V2 相同
+        # =============================================
+        self.patch_embed = PatchEmbed(patch_size=vit_patch_size, in_chans=embed_dim, embed_dim=embed_dim)
+        self.rope_embed = RopePositionEmbedding(embed_dim=embed_dim, num_heads=dino_num_heads)
+        self.blocks = nn.ModuleList([
+            SelfAttentionBlock(dim=embed_dim, num_heads=dino_num_heads, drop_path=0.1)
+            for _ in range(dino_depth)
+        ])
+        self.norm = nn.LayerNorm(embed_dim)
+        self.patch_unembed = PatchUnEmbed(embed_dim=embed_dim)
+        self.conv_after_body = nn.Conv2d(embed_dim, embed_dim, 3, 1, 1)
+
+        # =============================================
+        # 4. FiLM 调制器 — 每个 Transformer Block 后一个（增强版）
+        # =============================================
+        self.film_modulators = nn.ModuleList([
+            FiLMModulatorV2(task_embed_dim, embed_dim)
+            for _ in range(dino_depth)
+        ])
+        # Backbone 输出（conv 特征图）也加一个 FiLM
+        self.film_after_body = FiLMModulatorV2(task_embed_dim, embed_dim)
+
+        # =============================================
+        # 5. 恢复分辨率的上采样器
+        # =============================================
+        self.decoder_feat_upsampler = Upsample(scale=vit_patch_size, num_feat=embed_dim)
+
+        # =============================================
+        # 6. 输出尾 (Output Tails) — 与 V1/V2 相同
+        # =============================================
+        # Task 1 (SR): 2x 上采样 → 1ch
+        self.conv_before_upsample0 = nn.Sequential(
+            nn.Conv2d(embed_dim, 32, 3, 1, 1), nn.LeakyReLU(inplace=True))
+        self.upsamplesr = Upsample(scale=2, num_feat=32)
+        self.upsample_common = Upsample(scale=1, num_feat=32)
+        self.conv_last0 = nn.Conv2d(32, 1, 3, 1, 1)
+
+        # Task 5 (Volumetric): → 61ch
+        self.decoder_feat_upsampler_v = Upsample(scale=vit_patch_size, num_feat=embed_dim)
+        self.conv_before_upsamplev = nn.Sequential(
+            nn.Conv2d(embed_dim, embed_dim, 3, 1, 1), nn.LeakyReLU(inplace=True))
+        self.conv_lastv = nn.Conv2d(embed_dim, 61, 3, 1, 1)
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+    def _get_task_embedding(self, task_id, batch_size, device):
+        """获取当前任务的嵌入向量，复制到 batch 维度"""
+        idx = torch.tensor([task_id - 1], device=device)
+        emb = self.task_embedding(idx)  # [1, task_embed_dim]
+        return emb.expand(batch_size, -1)  # [B, task_embed_dim]
+
+    def forward_features(self, x, task_emb):
+        """
+        带 FiLM 调制的 Backbone 前向传播。
+        """
+        B, C, H_orig, W_orig = x.shape
+        grid_h = H_orig // self.vit_patch_size
+        grid_w = W_orig // self.vit_patch_size
+
+        x = self.patch_embed(x)  # [B, N, embed_dim]
+        cos, sin = self.rope_embed(grid_h, grid_w, device=x.device)
+
+        # 逐层 Transformer Block + FiLM 调制
+        for blk, film in zip(self.blocks, self.film_modulators):
+            x = blk(x, cos, sin)          # [B, N, embed_dim]
+            x = film(task_emb, x)         # FiLM: γ·x + β
+
+        x = self.norm(x)
+        x = self.patch_unembed(x, (grid_h, grid_w))  # [B, embed_dim, grid_h, grid_w]
+        x = self.conv_after_body(x)
+        x = self.film_after_body(task_emb, x)  # FiLM on conv feature map
+
+        # 恢复到原始分辨率
+        x = self.decoder_feat_upsampler(x)
+        if x.shape[2] != H_orig or x.shape[3] != W_orig:
+            x = F.interpolate(x, size=(H_orig, W_orig), mode='bilinear', align_corners=False)
+        return x
+
+    def forward(self, x, tsk=0):
+        if tsk > 0:
+            self.task = tsk
+        self.mean = self.mean.type_as(x)
+        B = x.shape[0]
+        H_orig, W_orig = x.shape[2], x.shape[3]
+
+        # 获取任务嵌入
+        task_emb = self._get_task_embedding(self.task, B, x.device)  # [B, task_embed_dim]
+
+        # ============ Head 阶段：任务专用输入头（与 V1 一致）============
+        if self.task == 1:
+            x_first = self.conv_firstsr((x - self.mean) * self.img_range)
+        elif self.task == 2:
+            x_input = (x - self.mean) * self.img_range
+            x_first = self.conv_firstdT(x_input)
+        elif self.task == 3:
+            x_first = self.conv_firstiso((x - self.mean) * self.img_range)
+        elif self.task == 4:
+            proj_out = self.project(x)
+            if isinstance(proj_out, tuple):
+                x2d = proj_out[0]
+                eacm_losses = proj_out[1]
+            else:
+                x2d = proj_out
+                eacm_losses = []
+            x_first = self.conv_firstproj((x2d - self.mean) * self.img_range)
+        elif self.task == 5:
+            xunet = self.conv_first0(x)  # 121ch → 61ch (UNetA)
+            x_first = self.conv_firstv(xunet)
+
+        # ============ Body 阶段：带 FiLM 调制的 Backbone ============
+        xfe = self.forward_features(x_first, task_emb)
+
+        # ============ Tail 阶段 ============
+        if self.task in [1, 2, 3]:
+            x_out = self.conv_before_upsample0(xfe + x_first)  # 残差连接
+            x_out = self.upsamplesr(x_out) if self.task == 1 else self.upsample_common(x_out)
+            x_out = self.conv_last0(x_out)
+            return x_out / self.img_range + self.mean
+        elif self.task == 4:
+            x_out = self.conv_last0(self.conv_before_upsample0(xfe))
+            eacm_loss = sum(eacm_losses) / max(len(eacm_losses), 1) if eacm_losses else torch.tensor(0.0, device=x.device)
+            return x2d, x_out / self.img_range + self.mean + x2d, eacm_loss
+        elif self.task == 5:
+            x_out = self.conv_before_upsamplev(xfe)
+            x_out = F.interpolate(x_out, size=(H_orig * 11, W_orig * 11),
+                                  mode='bilinear', align_corners=False)
+            x_out = self.conv_lastv(x_out)
+            xunet_up = F.interpolate(xunet, size=(H_orig * 11, W_orig * 11),
+                                     mode='bilinear', align_corners=False)
+            return xunet_up, x_out / self.img_range + self.mean
+
+        return x_out / self.img_range + self.mean
+
+
+# ============================================================
+# FiLM 调制层 V2：增强版（多层 MLP + LayerNorm）
+# ============================================================
+class FiLMModulatorV2(nn.Module):
+    """
+    增强版 FiLM 调制器:
+    - 3 层 MLP（比 V1 多一层），提升任务条件建模容量
+    - 加入 LayerNorm 稳定训练
+    - 更好的初始化策略
+    """
+    def __init__(self, task_embed_dim, feature_dim):
+        super(FiLMModulatorV2, self).__init__()
+        hidden_dim = feature_dim  # 隐层维度 = 特征维度
+        self.mlp = nn.Sequential(
+            nn.Linear(task_embed_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, feature_dim * 2),  # 输出 gamma 和 beta
+        )
+        # 初始化：gamma=1, beta=0（恒等变换，训练初期不破坏预训练特征）
+        nn.init.zeros_(self.mlp[-1].weight)
+        nn.init.zeros_(self.mlp[-1].bias)
+        self.mlp[-1].bias.data[:feature_dim] = 1.0  # gamma 初始化为 1
+
+    def forward(self, task_embedding, feature):
+        """
+        Args:
+            task_embedding: [B, task_embed_dim] 任务嵌入向量
+            feature: [B, N, C] (token 序列) 或 [B, C, H, W] (特征图)
+        Returns:
+            调制后的特征，形状与输入相同
+        """
+        gamma_beta = self.mlp(task_embedding)  # [B, C*2]
+        gamma, beta = gamma_beta.chunk(2, dim=-1)  # 各 [B, C]
+
+        if feature.dim() == 3:
+            gamma = gamma.unsqueeze(1)  # [B, 1, C]
+            beta = beta.unsqueeze(1)
+        elif feature.dim() == 4:
+            gamma = gamma.unsqueeze(-1).unsqueeze(-1)  # [B, C, 1, 1]
+            beta = beta.unsqueeze(-1).unsqueeze(-1)
+
+        return gamma * feature + beta
