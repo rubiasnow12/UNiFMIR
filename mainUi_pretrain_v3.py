@@ -55,7 +55,7 @@ def options():
     parser.add_argument('--datamax', type=int, default=100)
 
     parser.add_argument('--print_every', type=int, default=200, help='')
-    parser.add_argument('--test_every', type=int, default=1000)
+    parser.add_argument('--test_every', type=int, default=200)
     parser.add_argument('--load', type=str, default='', help='file name to load')
     parser.add_argument('--lr', type=float, default=0.00005, help='learning rate')
     parser.add_argument('--film_lr_mult', type=float, default=5.0,
@@ -102,6 +102,8 @@ def options():
                         help='任务嵌入维度（V3 默认 128，V2 为 64）')
     parser.add_argument('--batches_per_task', type=int, default=4,
                         help='每个任务连续训练多少个 batch 后切换（mini-batch 级）')
+    parser.add_argument('--val_all_every', type=int, default=20,
+                        help='每隔多少个 epoch 对全部 5 个任务跑验证（其余 epoch 跳过全任务验证）')
 
     args = parser.parse_args()
 
@@ -394,6 +396,12 @@ class PreTrainerV3:
             task_batch_counter += 1
             task_train_counts[current_task] += 1
 
+            # SR 任务需要设置 scale=2
+            if self.tsk == 1:
+                self.model.scale = 2
+            else:
+                self.model.scale = 1
+
             if self.tsk == 4:
                 self.epoch_tsk4 += 1
             if self.tsk == 5:
@@ -472,7 +480,10 @@ class PreTrainerV3:
             if batch > 0 and batch % self.args.test_every == 0:
                 self._run_validation(epoch, batch)
 
-        # Epoch 结束
+        # Epoch 结束: 每 val_all_every 个 epoch 对所有 5 个任务跑验证
+        if epoch % self.args.val_all_every == 0 or epoch == self.args.epochs:
+            self._run_epoch_end_validation(epoch)
+
         self.loss.end_log(self.batches_per_epoch)
         self.error_last = self.loss.log[-1, -1]
         self.optimizer.schedule()
@@ -480,43 +491,16 @@ class PreTrainerV3:
         self.file.write('Name \n PSNR \n' + str(self.pslst) + '\n SSIM \n' + str(self.sslst))
         save_numbered = (epoch % self.args.save_every == 0) or (epoch == self.args.epochs)
         self.model.save(self.dir + '/model/', epoch, is_best=False, save_numbered=save_numbered)
-        self.model.scale = 1
+        self.model.scale = 1  # 重置 scale
         print(f'save model Epoch{epoch} (numbered={save_numbered}), Loss = {batch_loss.item():.6f}')
         print(f'  Epoch task distribution: {task_train_counts}')
 
     def _run_validation(self, epoch, batch):
-        """运行当前任务的验证"""
+        """运行当前任务的验证（训练中间触发）"""
         self.loss.end_log(self.batches_per_epoch)
         self.error_last = self.loss.log[-1, -1]
 
-        # 暂时设置 test loader
-        self.loader_test = self.data_manager.test_loaders.get(self.tsk, None)
-        if self.loader_test is None:
-            return
-
-        if self.tsk == 1:
-            psnr, ssim = self.testSR(epoch)
-        elif self.tsk == 2:
-            psnr, ssim = self.test3Ddenoise(epoch, condition=1)
-        elif self.tsk == 3:
-            psnr, ssim = self.testiso(epoch)
-        elif self.tsk == 4:
-            psnr, ssim = self.testproj(epoch)
-        elif self.tsk == 5:
-            psnr, ssim = self.test2to3(epoch)
-        else:
-            return
-
-        self.pslst.append(psnr)
-        self.sslst.append(ssim)
-
-        wandb.log({
-            'val_psnr': psnr,
-            'val_ssim': ssim,
-            'best_psnr': self.bestpsnr,
-            'best_epoch': self.bestep,
-            'val_task': self.tsk,
-        })
+        self._validate_single_task(self.tsk, epoch)
 
         self.model.train()
         self.loss.step()
@@ -526,8 +510,70 @@ class PreTrainerV3:
                            '\tLearning rate: {:.2e}'.format(Decimal(lr)))
         self.loss.start_log()
 
+    def _run_epoch_end_validation(self, epoch):
+        """Epoch 结束时对所有 5 个任务跑验证，每个任务单独记录指标"""
+        task_names = {1: 'SR', 2: 'Denoise', 3: 'Iso', 4: 'Proj', 5: 'Vol'}
+        print(f'\n===== Epoch {epoch} End Validation (all tasks) =====')
+        for tsk in range(1, 6):
+            psnr, ssim = self._validate_single_task(tsk, epoch)
+            if psnr is not None:
+                print(f'  Task {tsk} ({task_names[tsk]}): PSNR={psnr:.4f}, SSIM={ssim:.4f}')
+        print(f'  Best PSNR={self.bestpsnr:.4f} @ Epoch {self.bestep}')
+        print(f'=================================================\n')
+        self.model.train()
+
+    def _validate_single_task(self, tsk, epoch):
+        """对单个任务跑验证并记录到 wandb"""
+        task_names = {1: 'SR', 2: 'Denoise', 3: 'Iso', 4: 'Proj', 5: 'Vol'}
+        self.loader_test = self.data_manager.test_loaders.get(tsk, None)
+        if self.loader_test is None:
+            return None, None
+
+        # 设置正确的 scale
+        if tsk == 1:
+            self.model.scale = 2
+        else:
+            self.model.scale = 1
+        self.tsk = tsk
+
+        if tsk == 1:
+            psnr, ssim = self.testSR(epoch)
+        elif tsk == 2:
+            psnr, ssim = self.test3Ddenoise(epoch, condition=1)
+        elif tsk == 3:
+            psnr, ssim = self.testiso(epoch)
+        elif tsk == 4:
+            psnr, ssim = self.testproj(epoch)
+        elif tsk == 5:
+            psnr, ssim = self.test2to3(epoch)
+        else:
+            return None, None
+
+        self.pslst.append(psnr)
+        self.sslst.append(ssim)
+
+        # 分任务记录 wandb 指标
+        task_name = task_names[tsk]
+        wandb.log({
+            f'val_psnr_{task_name}': psnr,
+            f'val_ssim_{task_name}': ssim,
+            'val_psnr': psnr,
+            'val_ssim': ssim,
+            'best_psnr': self.bestpsnr,
+            'best_epoch': self.bestep,
+            'val_task': tsk,
+            'epoch': epoch,
+        })
+
+        return psnr, ssim
+
     def testall(self, tsk, subd=-1, condition=1):
         self.tsk = tsk
+        # 设置正确的 scale
+        if tsk == 1:
+            self.model.scale = 2
+        else:
+            self.model.scale = 1
         self.loader_test = self.data_manager.test_loaders.get(tsk, None)
         if self.loader_test is None:
             print(f"No test loader for task {tsk}")

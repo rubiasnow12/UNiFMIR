@@ -1633,6 +1633,7 @@ class DinoUniModelV3(nn.Module):
                  vit_patch_size=8, task_embed_dim=128):
         super(DinoUniModelV3, self).__init__()
         self.task = 1
+        self.scale = 1  # 默认scale，SR任务时会设为2
         self.img_range = 1.0
         self.mean = torch.zeros(1, 1, 1, 1)
         self.embed_dim = embed_dim
