@@ -40,6 +40,15 @@ class Model(nn.Module):
         elif 'SwinIR2t3' in args.model:
             print('********** %s ***********' % args.model.lower())
             self.model = module.make_model2t3(args).to(self.device)
+        elif 'UniDINOv3SR' in args.model:  # V3 多任务模型用于 SR 微调
+            print('********** %s (DinoUniModelV3 → SR Fine-tuning) ***********' % args.model.lower())
+            self.model = dinoir_v3.DinoUniModelV3(
+                args, embed_dim=384, dino_depth=12,
+                dino_num_heads=6, vit_patch_size=8,
+                task_embed_dim=128
+            ).to(self.device)
+            self._should_inject_lora = False
+            self._lora_enabled = False
         elif 'DINOIRv3' in args.model:  # 添加这个分支
             print('********** %s ***********' % args.model.lower())
             self.model = dinoir_v3.make_model(args).to(self.device)
@@ -163,6 +172,11 @@ class Model(nn.Module):
     def forward(self, x, *args, **kwargs):
         # 提取任务 ID（如果有）
         task_id = args[0] if len(args) > 0 else kwargs.get('tsk', 0)
+        
+        # UniDINOv3SR: 固定使用 task=1 (SR)，并设置 scale=2
+        if 'UniDINOv3SR' in self.args.model:
+            task_id = 1
+            self.model.scale = self.scale  # 使用 args.scale[0] 的值
         
         # 任务5 (Volume) 使用特殊的 11x 上采样，不适合 forward_chop
         # 直接调用模型

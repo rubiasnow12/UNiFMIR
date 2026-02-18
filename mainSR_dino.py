@@ -169,8 +169,8 @@ def main():
 
 if __name__ == '__main__':
     datamin, datamax = 0, 100
-    modelname = 'DINOIRv3'
-    # modelname = 'MultiDINOv3'
+    modelname = 'UniDINOv3SR'  # 使用 DinoUniModelV3 架构，与预训练 V3 权重完全匹配
+    # modelname = 'DINOIRv3'  # 旧的单任务模型（与 V3 预训练权重不兼容）
     # testsetlst = ['F-actin','CCPs','ER','Microtubules'] 
     testsetlst = ['ER']
     test_only = True  # 设置为 True 以仅进行测试
@@ -178,8 +178,9 @@ if __name__ == '__main__':
     #                 './experiment/DINOIRv3CCPs-frozen/model/model_80.pt',
     #                 './experiment/DINOIRv3ER-frozen/model/model_171.pt',156
     #                 './experiment/DINOIRv3Microtubules-frozen/model/model_78.pt']
-    modelpaths = './experiment/DINOIRv3ER-frozen/model/model_91.pt',
-    # modelpaths = './dinoir_v3_vitb_sr_preload.pth',
+    # modelpaths = './experiment/DINOIRv3ER-frozen/model/model_91.pt',
+    # modelpaths = './experiment/Uni-DINOv3-pretrain-v3/model_best.pt',
+    modelpaths = './experiment/UniDINOv3SRER-v3/model/model_101.pt'
     normrange = 'Norm_0-100'  #
     
     scale = 2
@@ -205,7 +206,7 @@ if __name__ == '__main__':
     # dino_checkpoint_path = 'experiment/DINOIRv3ER-frozen/model/model_171.pt'  #
 
     for testset, modelpath in zip(testsetlst,modelpaths):
-        savepath = '%s%s-frozen/' % (modelname, testset)
+        savepath = '%s%s-v3/' % (modelname, testset)
         # savepath = 'DINOIRv3CCPs-multi/'
         # modelpath = modelpath % savepath
 
